@@ -1,12 +1,10 @@
 import torch
 import torch.nn as nn
 
-import logging
+# import logging
 import time
 
-from utils import factorization
-
-LOG = logging.getLogger(__name__)
+# from utils import factorization
 
 
 class FixableDropout(nn.Module):
@@ -62,7 +60,7 @@ class LightIDMLP(nn.Module):
         rank: int = None,
     ):
         super().__init__()
-        LOG.info(f"Building LightIDMLP {[indim] + [rank] + [indim]}")
+        print(f"Building LightIDMLP {[indim] + [rank] + [indim]}")
         self.layer1 = nn.Linear(indim, rank)
         self.layer2 = nn.Linear(rank, indim)
         self.layer2.weight.data[:] = 0
@@ -86,7 +84,7 @@ class IDMLP(nn.Module):
         n_modes: int = None,
     ):
         super().__init__()
-        LOG.info(f"Building IDMLP ({init}) {[indim] * (n_hidden + 2)}")
+        print(f"Building IDMLP ({init}) {[indim] * (n_hidden + 2)}")
         self.layers = nn.ModuleList(
             [
                 LRLinear(
@@ -108,97 +106,97 @@ class IDMLP(nn.Module):
         return x
 
 
-class LatentIDMLP(nn.Module):
-    def __init__(
-        self,
-        indim: int,
-        outdim: int,
-        hidden_dim: int,
-        n_hidden: int,
-        init: str = None,
-        act: str = None,
-        rank: int = None,
-    ):
-        super().__init__()
-        LOG.info(f"Building Latent IDMLP ({init}) {[indim] * (n_hidden + 2)}")
+# class LatentIDMLP(nn.Module):
+#     def __init__(
+#         self,
+#         indim: int,
+#         outdim: int,
+#         hidden_dim: int,
+#         n_hidden: int,
+#         init: str = None,
+#         act: str = None,
+#         rank: int = None,
+#     ):
+#         super().__init__()
+#         print(f"Building Latent IDMLP ({init}) {[indim] * (n_hidden + 2)}")
 
-        self.layers = nn.ModuleList()
-        self.layers.append(nn.Linear(indim, rank))
-        for _ in range(n_hidden - 1):
-            self.layers.append(nn.Linear(rank, rank))
-        self.layers.append(nn.Linear(rank, outdim))
+#         self.layers = nn.ModuleList()
+#         self.layers.append(nn.Linear(indim, rank))
+#         for _ in range(n_hidden - 1):
+#             self.layers.append(nn.Linear(rank, rank))
+#         self.layers.append(nn.Linear(rank, outdim))
 
-        for layer in self.layers[:-1]:
-            nn.init.xavier_normal_(layer.weight.data)
+#         for layer in self.layers[:-1]:
+#             nn.init.xavier_normal_(layer.weight.data)
 
-        if init == "id":
-            self.layers[-1].weight.data.zero_()
-            self.layers[-1].bias.data.zero_()
+#         if init == "id":
+#             self.layers[-1].weight.data.zero_()
+#             self.layers[-1].bias.data.zero_()
 
-        self.init = init
+#         self.init = init
 
-    def forward(self, x):
-        out = x
-        for layer in self.layers[:-1]:
-            out = layer(out).relu()
+#     def forward(self, x):
+#         out = x
+#         for layer in self.layers[:-1]:
+#             out = layer(out).relu()
 
-        out = self.layers[-1](out)
-        if self.init == "id":
-            return out + x
-        else:
-            return out
+#         out = self.layers[-1](out)
+#         if self.init == "id":
+#             return out + x
+#         else:
+#             return out
 
 
-class KLinear(nn.Module):
-    def __init__(self, inf, outf, pfrac=0.05, symmetric=True, zero_init: bool = True):
-        super().__init__()
+# class KLinear(nn.Module):
+#     def __init__(self, inf, outf, pfrac=0.05, symmetric=True, zero_init: bool = True):
+#         super().__init__()
 
-        self.inf = inf
+#         self.inf = inf
 
-        in_fact = factorization(inf)
-        out_fact = factorization(outf)
+#         in_fact = factorization(inf)
+#         out_fact = factorization(outf)
 
-        total_params = 0
-        self.a, self.b = nn.ParameterList(), nn.ParameterList()
-        for (i1, i2), (o1, o2) in zip(reversed(in_fact), reversed(out_fact)):
-            new_params = (o1 * i1 + o2 * i2) * (2 if symmetric else 1)
-            if (total_params + new_params) / (inf * outf) > pfrac and len(self.a) > 0:
-                break
-            total_params += new_params
+#         total_params = 0
+#         self.a, self.b = nn.ParameterList(), nn.ParameterList()
+#         for (i1, i2), (o1, o2) in zip(reversed(in_fact), reversed(out_fact)):
+#             new_params = (o1 * i1 + o2 * i2) * (2 if symmetric else 1)
+#             if (total_params + new_params) / (inf * outf) > pfrac and len(self.a) > 0:
+#                 break
+#             total_params += new_params
 
-            self.a.append(nn.Parameter(torch.empty(o1, i1)))
-            if symmetric:
-                self.a.append(nn.Parameter(torch.empty(o2, i2)))
+#             self.a.append(nn.Parameter(torch.empty(o1, i1)))
+#             if symmetric:
+#                 self.a.append(nn.Parameter(torch.empty(o2, i2)))
 
-            self.b.append(nn.Parameter(torch.empty(o2, i2)))
-            if symmetric:
-                self.b.append(nn.Parameter(torch.empty(o1, i1)))
+#             self.b.append(nn.Parameter(torch.empty(o2, i2)))
+#             if symmetric:
+#                 self.b.append(nn.Parameter(torch.empty(o1, i1)))
 
-            assert self.a[-1].kron(self.b[-1]).shape == (outf, inf)
+#             assert self.a[-1].kron(self.b[-1]).shape == (outf, inf)
 
-        for factor in self.a:
-            nn.init.kaiming_normal_(factor.data)
-        for factor in self.b:
-            if zero_init:
-                factor.data.zero_()
-            else:
-                nn.init.kaiming_normal_(factor.data)
+#         for factor in self.a:
+#             nn.init.kaiming_normal_(factor.data)
+#         for factor in self.b:
+#             if zero_init:
+#                 factor.data.zero_()
+#             else:
+#                 nn.init.kaiming_normal_(factor.data)
 
-        print(
-            f"Created ({symmetric}) k-layer using "
-            f"{total_params/(outf*inf):.3f} params, {len(self.a)} comps"
-        )
-        self.bias = nn.Parameter(torch.zeros(outf))
+#         print(
+#             f"Created ({symmetric}) k-layer using "
+#             f"{total_params/(outf*inf):.3f} params, {len(self.a)} comps"
+#         )
+#         self.bias = nn.Parameter(torch.zeros(outf))
 
-    def forward(self, x):
-        assert (
-            x.shape[-1] == self.inf
-        ), f"Expected input with {self.inf} dimensions, got {x.shape}"
-        w = sum([a.kron(b) for a, b in zip(self.a, self.b)]) / (2 * len(self.a) ** 0.5)
-        y = w @ x.T
-        if self.bias is not None:
-            y = y + self.bias
-        return y
+#     def forward(self, x):
+#         assert (
+#             x.shape[-1] == self.inf
+#         ), f"Expected input with {self.inf} dimensions, got {x.shape}"
+#         w = sum([a.kron(b) for a, b in zip(self.a, self.b)]) / (2 * len(self.a) ** 0.5)
+#         y = w @ x.T
+#         if self.bias is not None:
+#             y = y + self.bias
+#         return y
 
 
 class LRLinear(nn.Module):
@@ -234,7 +232,7 @@ class LRLinear(nn.Module):
         if mode is not None:
             assert (
                 self.n_modes is not None
-            ), "Linear got a mode but wasn't initialized for it"
+            ), f"Linear got a mode but wasn't initialized for it: {mode}"
             assert (
                 mode < self.n_modes
             ), f"Input mode {mode} outside of range {self.n_modes}"
@@ -258,123 +256,123 @@ class LRLinear(nn.Module):
             return acts
 
 
-class MLP(nn.Module):
-    def __init__(
-        self,
-        indim: int,
-        outdim: int,
-        hidden_dim: int,
-        n_hidden: int,
-        init: str = "xavier_uniform",
-        act: str = "relu",
-        rank: int = None,
-    ):
-        super().__init__()
+# class MLP(nn.Module):
+#     def __init__(
+#         self,
+#         indim: int,
+#         outdim: int,
+#         hidden_dim: int,
+#         n_hidden: int,
+#         init: str = "xavier_uniform",
+#         act: str = "relu",
+#         rank: int = None,
+#     ):
+#         super().__init__()
 
-        self.init = init
+#         self.init = init
 
-        if act == "relu":
-            self.act = nn.ReLU()
-        elif act == "learned":
-            self.act = ActMLP(10, 1)
-        else:
-            raise ValueError(f"Unrecognized activation function '{act}'")
+#         if act == "relu":
+#             self.act = nn.ReLU()
+#         elif act == "learned":
+#             self.act = ActMLP(10, 1)
+#         else:
+#             raise ValueError(f"Unrecognized activation function '{act}'")
 
-        if hidden_dim is None:
-            hidden_dim = outdim * 2
+#         if hidden_dim is None:
+#             hidden_dim = outdim * 2
 
-        if init.startswith("id") and outdim != indim:
-            LOG.info(f"Overwriting outdim ({outdim}) to be indim ({indim})")
-            outdim = indim
+#         if init.startswith("id") and outdim != indim:
+#             print(f"Overwriting outdim ({outdim}) to be indim ({indim})")
+#             outdim = indim
 
-        if init == "id":
-            old_hidden_dim = hidden_dim
-            if hidden_dim < indim * 2:
-                hidden_dim = indim * 2
+#         if init == "id":
+#             old_hidden_dim = hidden_dim
+#             if hidden_dim < indim * 2:
+#                 hidden_dim = indim * 2
 
-            if hidden_dim % indim != 0:
-                hidden_dim += hidden_dim % indim
+#             if hidden_dim % indim != 0:
+#                 hidden_dim += hidden_dim % indim
 
-            if old_hidden_dim != hidden_dim:
-                LOG.info(
-                    f"Overwriting hidden dim ({old_hidden_dim}) to be {hidden_dim}"
-                )
+#             if old_hidden_dim != hidden_dim:
+#                 print(
+#                     f"Overwriting hidden dim ({old_hidden_dim}) to be {hidden_dim}"
+#                 )
 
-        if init == "id_alpha":
-            self.alpha = nn.Parameter(torch.zeros(1, outdim))
+#         if init == "id_alpha":
+#             self.alpha = nn.Parameter(torch.zeros(1, outdim))
 
-        dims = [indim] + [hidden_dim] * n_hidden + [outdim]
-        LOG.info(f"Building ({init}) MLP: {dims} (rank {rank})")
+#         dims = [indim] + [hidden_dim] * n_hidden + [outdim]
+#         print(f"Building ({init}) MLP: {dims} (rank {rank})")
 
-        layers = []
-        for idx, (ind, outd) in enumerate(zip(dims[:-1], dims[1:])):
-            if rank is None:
-                layers.append(nn.Linear(ind, outd))
-            else:
-                layers.append(LRLinear(ind, outd, rank=rank))
-            if idx < n_hidden:
-                layers.append(self.act)
+#         layers = []
+#         for idx, (ind, outd) in enumerate(zip(dims[:-1], dims[1:])):
+#             if rank is None:
+#                 layers.append(nn.Linear(ind, outd))
+#             else:
+#                 layers.append(LRLinear(ind, outd, rank=rank))
+#             if idx < n_hidden:
+#                 layers.append(self.act)
 
-        if rank is None:
-            if init == "id":
-                if n_hidden > 0:
-                    layers[0].weight.data = torch.eye(indim).repeat(
-                        hidden_dim // indim, 1
-                    )
-                    layers[0].weight.data[hidden_dim // 2 :] *= -1
-                    layers[-1].weight.data = torch.eye(outdim).repeat(
-                        1, hidden_dim // outdim
-                    )
-                    layers[-1].weight.data[:, hidden_dim // 2 :] *= -1
-                    layers[-1].weight.data /= (hidden_dim // indim) / 2.0
+#         if rank is None:
+#             if init == "id":
+#                 if n_hidden > 0:
+#                     layers[0].weight.data = torch.eye(indim).repeat(
+#                         hidden_dim // indim, 1
+#                     )
+#                     layers[0].weight.data[hidden_dim // 2 :] *= -1
+#                     layers[-1].weight.data = torch.eye(outdim).repeat(
+#                         1, hidden_dim // outdim
+#                     )
+#                     layers[-1].weight.data[:, hidden_dim // 2 :] *= -1
+#                     layers[-1].weight.data /= (hidden_dim // indim) / 2.0
 
-            for layer in layers:
-                if isinstance(layer, nn.Linear):
-                    if init == "ortho":
-                        nn.init.orthogonal_(layer.weight)
-                    elif init == "id":
-                        if layer.weight.shape[0] == layer.weight.shape[1]:
-                            layer.weight.data = torch.eye(hidden_dim)
-                    else:
-                        gain = 3**0.5 if (layer is layers[-1]) else 1.0
-                        nn.init.xavier_uniform_(layer.weight, gain=gain)
+#             for layer in layers:
+#                 if isinstance(layer, nn.Linear):
+#                     if init == "ortho":
+#                         nn.init.orthogonal_(layer.weight)
+#                     elif init == "id":
+#                         if layer.weight.shape[0] == layer.weight.shape[1]:
+#                             layer.weight.data = torch.eye(hidden_dim)
+#                     else:
+#                         gain = 3**0.5 if (layer is layers[-1]) else 1.0
+#                         nn.init.xavier_uniform_(layer.weight, gain=gain)
 
-                    layer.bias.data[:] = 0
+#                     layer.bias.data[:] = 0
 
-        layers[-1].bias = None
-        self.mlp = nn.Sequential(*layers)
+#         layers[-1].bias = None
+#         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, x):
-        if self.init == "id_alpha":
-            return x + self.alpha * self.mlp(x)
-        else:
-            return self.mlp(x)
+#     def forward(self, x):
+#         if self.init == "id_alpha":
+#             return x + self.alpha * self.mlp(x)
+#         else:
+#             return self.mlp(x)
 
 
-if __name__ == "__main__":
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
-        level=logging.INFO,
-    )
-    m0 = MLP(1000, 1000, 1500, 3)
-    m1 = MLP(1000, 1000, 1500, 3, init="id")
-    m2 = MLP(1000, 1000, 1500, 3, init="id_alpha")
-    m3 = MLP(1000, 1000, 1500, 3, init="ortho", act="learned")
+# if __name__ == "__main__":
+#     logging.basicConfig(
+#         format="%(asctime)s - %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
+#         level=logging.INFO,
+#     )
+#     m0 = MLP(1000, 1000, 1500, 3)
+#     m1 = MLP(1000, 1000, 1500, 3, init="id")
+#     m2 = MLP(1000, 1000, 1500, 3, init="id_alpha")
+#     m3 = MLP(1000, 1000, 1500, 3, init="ortho", act="learned")
 
-    x = 0.01 * torch.randn(999, 1000)
+#     x = 0.01 * torch.randn(999, 1000)
 
-    y0 = m0(x)
-    y1 = m1(x)
-    y2 = m2(x)
-    y3 = m3(x)
+#     y0 = m0(x)
+#     y1 = m1(x)
+#     y2 = m2(x)
+#     y3 = m3(x)
 
-    print("y0", (y0 - x).abs().max())
-    print("y1", (y1 - x).abs().max())
-    print("y2", (y2 - x).abs().max())
-    print("y3", (y3 - x).abs().max())
+#     print("y0", (y0 - x).abs().max())
+#     print("y1", (y1 - x).abs().max())
+#     print("y2", (y2 - x).abs().max())
+#     print("y3", (y3 - x).abs().max())
 
-    assert not torch.allclose(y0, x)
-    assert torch.allclose(y1, x)
-    assert torch.allclose(y2, x)
-    assert not torch.allclose(y3, x)
-    breakpoint()  # fmt: skip
+#     assert not torch.allclose(y0, x)
+#     assert torch.allclose(y1, x)
+#     assert torch.allclose(y2, x)
+#     assert not torch.allclose(y3, x)
+#     breakpoint()  # fmt: skip

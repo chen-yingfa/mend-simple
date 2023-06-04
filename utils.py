@@ -4,14 +4,10 @@ import numpy as np
 import struct
 import os
 import hydra
-import logging
 import torch
 import torch.nn as nn
 from collections import defaultdict
 import math
-
-
-LOG = logging.getLogger(__name__)
 
 
 def masked_mean(values, mask):
@@ -46,6 +42,15 @@ def off_diagonal(mat):
 
 
 def set_dropout(model, p):
+    """
+    Sets the dropout probability of all nn.Dropout modules in the provided
+    PyTorch model and all its submodules.
+
+    :param model: The PyTorch model to modify.
+    :type model: torch.nn.Module
+    :param p: The new dropout probability. If None, the function does nothing.
+    :type p: float or None
+    """
     if p is not None:
         n_reset = 0
         for m in model.modules():
@@ -65,18 +70,18 @@ def set_dropout(model, p):
                     m.activation_dropout = p
                     n_reset += 1
 
-        LOG.info(f"Set {n_reset} dropout modules to p={p}")
+        print(f"Set {n_reset} dropout modules to p={p}")
 
 
-def _inner_params(named_parameters, inner_names):
+def get_inner_params(named_parameters, inner_names):
     param_dict = dict(named_parameters)
     return [(n, param_dict[n]) for n in inner_names]
 
 
-def shift_targets(config):
+def should_shift_targets(model_name: str) -> bool:
     return (
-        "t5" not in config.model.name.lower()
-        and "blender" not in config.model.name.lower()
+        "t5" not in model_name.lower()
+        and "blender" not in model_name.lower()
     )
 
 
@@ -159,11 +164,7 @@ def safe_backward(loss, parameters, accumulate=1, allow_unused=False, backward=F
                 else:
                     p.grad += g / accumulate
         else:
-            LOG.info(f"Skipping grad accumulation because inf: {inf} nan: {nan}")
-
-
-def _logits(x):
-    return x if not hasattr(x, "logits") else x.logits
+            print(f"Skipping grad accumulation because inf: {inf} nan: {nan}")
 
 
 def _last_encoder_state(x):
@@ -199,9 +200,9 @@ def load_archive(path):
         ), f"Expected a single model in {models_dir}, got {len(non_bk)}"
         path = os.path.join(models_dir, non_bk[0])
 
-    LOG.info(f"Loading checkpoint from {path}")
+    print(f"Loading checkpoint from {path}")
     archive = torch.load(path, map_location="cpu")
-    LOG.info("Load complete.")
+    print("Load complete.")
 
     return archive, path
 
@@ -418,6 +419,7 @@ class EditBatchSampler:
 def parent_module(model, pname):
     comps = pname.split(".")
     parent = model
+    # print(list(parent.named_parameters().keys()))
     for comp in comps[:-1]:
         if hasattr(parent, comp):
             parent = getattr(parent, comp)

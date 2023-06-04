@@ -134,7 +134,7 @@ def multiclass_log_probs(
     return info_dict
 
 
-def masked_log_probs(pred, targ, shift=True, **kwargs):
+def masked_log_probs(pred, targ, shift: bool = True, **kwargs):
     pred = pred.to(torch.float32)
 
     if not (pred.dim() == 2 or pred.dim() == 3):

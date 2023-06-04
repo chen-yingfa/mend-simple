@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+*.pyo
+.DS_Store
+.vscode
+config
+test_state.pt

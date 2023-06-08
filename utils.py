@@ -1,13 +1,15 @@
 import datetime
 import typing
-import numpy as np
+from typing import List, Tuple, Mapping
 import struct
 import os
+from collections import defaultdict
+import math
+
+import numpy as np
 import hydra
 import torch
 import torch.nn as nn
-from collections import defaultdict
-import math
 
 
 def masked_mean(values, mask):
@@ -73,16 +75,15 @@ def set_dropout(model, p):
         print(f"Set {n_reset} dropout modules to p={p}")
 
 
-def get_inner_params(named_parameters, inner_names):
+def get_inner_params(
+    named_parameters, inner_names: List[str]
+) -> List[Tuple[str, torch.Tensor]]:
     param_dict = dict(named_parameters)
     return [(n, param_dict[n]) for n in inner_names]
 
 
 def should_shift_targets(model_name: str) -> bool:
-    return (
-        "t5" not in model_name.lower()
-        and "blender" not in model_name.lower()
-    )
+    return "t5" not in model_name.lower() and "blender" not in model_name.lower()
 
 
 # https://stackoverflow.com/questions/32871539/integer-factorization-in-python
@@ -92,22 +93,6 @@ def factorization(n):
 
 def scr():
     return "/home/jeeves/.cache/huggingface/hub"
-    # if os.path.exists("/scr-ssd"):
-    #     scr_dir = "/scr-ssd/" + getpass.getuser()
-    # else:
-    #     scr_dir = "/scr/" + getpass.getuser()
-
-    # if not os.path.exists(scr_dir):
-    #     os.makedirs(scr_dir)
-
-    # return scr_dir
-
-
-def uuid(digits=4):
-    if not hasattr(uuid, "uuid_value"):
-        uuid.uuid_value = struct.unpack("I", os.urandom(4))[0] % int(10**digits)
-
-    return uuid.uuid_value
 
 
 def formatted_timestamp(time=None):

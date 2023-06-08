@@ -1,8 +1,8 @@
-import transformers
+from typing import Optional
 import torch
 import torch.nn as nn
 import re
-from nn import FixableDropout
+from .nn import FixableDropout
 
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 
@@ -12,7 +12,7 @@ class CastModule(nn.Module):
         self,
         module: nn.Module,
         in_cast: torch.dtype = torch.float32,
-        out_cast: torch.dtype = None,
+        out_cast: Optional[torch.dtype] = None,
     ):
         super().__init__()
 
@@ -77,7 +77,10 @@ def load_ckpt(model, ckpt_path: str):
     print("Loaded checkpoint")
 
 
-def set_dropout(model: T5ForConditionalGeneration, dropout_rate: float):
+def set_dropout(model: nn.Module, dropout_rate: float):
+    """
+    Set dropout rate for all dropout modules in model.
+    """
     print("Dropout is not None, setting")
     n_reset = 0
     for mod in model.modules():
@@ -101,15 +104,21 @@ def set_dropout(model: T5ForConditionalGeneration, dropout_rate: float):
 
 
 def handle_no_grad(
-    model: T5ForConditionalGeneration,
+    model: nn.Module,
     no_grad_layers: str = None,
     inner_params: list = None,
     half: bool = False,
 ):
+    """
+    
+    """
     if half:
         model.bfloat16()
 
     def upcast(mod):
+        '''
+        
+        '''
         modlist = None
         for child in mod.children():
             if isinstance(child, nn.ModuleList):
@@ -164,10 +173,10 @@ def handle_no_grad(
 
 def get_model(
     pretrained_name: str,
-    ckpt_path: str = None,
-    dropout_rate: float = None,
-    no_grad_layers: str = None,
-    inner_params: list = None,
+    inner_params: list,
+    ckpt_path: Optional[str] = None,
+    dropout_rate: Optional[float] = None,
+    no_grad_layers: Optional[str] = None,
     half: bool = False,
 ):
     print(f"Loading {pretrained_name}")

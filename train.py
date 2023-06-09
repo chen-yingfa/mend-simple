@@ -1,13 +1,13 @@
 from pathlib import Path
 import copy
-from typing import List
+from typing import List, Optional
 
 from torch import nn
-from torch.utils.data import DataLoader
 
 from model.models import get_model, get_tokenizer
 from model.mend import Mend
 from data.zsre import QaDataset
+from trainer import EditorTrainer
 
 
 UPDATE_PARAM_NAMES = [
@@ -38,9 +38,16 @@ def get_editor(model, update_param_names: List[str]):
     return Mend(model, model_constructor, update_param_names)
 
 
-def get_dataset(tokenizer, data_dir: Path, split: str):
+def get_dataset(tokenizer, data_dir: Path, split: str, nq_dir: Optional[Path] = None):
+    """
+    Args:
+        tokenizer: tokenizer
+        data_dir: data directory
+        split: train/dev/test
+        nq_dir: nq data directory, used for hard negatives.
+    """
     zsre_dir = data_dir / "zsre"
-    nq_dir = data_dir / "nq"
+    # nq_dir = data_dir / "nq"
     dataset = QaDataset(
         tokenizer=tokenizer, data_dir=zsre_dir, split=split, nq_dir=nq_dir
     )
@@ -48,19 +55,22 @@ def get_dataset(tokenizer, data_dir: Path, split: str):
 
 
 def train(
-    editor, tokenizer, data_dir: Path, output_dir: Path, log_interval: int = 1000
+    editor: Mend, tokenizer, data_dir: Path, output_dir: Path, log_interval: int = 1000
 ):
     # Data
-    split = "train"
-    dataset = get_dataset(tokenizer, data_dir, split)
-    loader = DataLoader(dataset, batch_size=1, shuffle=False)
-    ep = 0
-    while ep < 1:
-        for step, batch in enumerate(loader):
-            print(batch)
-            break
-        ep += 1
-    print("==== Training done ====")
+    print("Loading data...")
+    train_data = get_dataset(tokenizer, data_dir, "train")
+    dev_data = get_dataset(tokenizer, data_dir, "dev")
+
+    # Trainer
+    trainer = EditorTrainer(
+        editor,
+        output_dir=output_dir,
+        train_data=train_data,
+        dev_data=dev_data,
+        log_interval=log_interval,
+    )
+    trainer.run()
 
 
 def main():
@@ -76,7 +86,7 @@ def main():
 
     output_dir = Path("result/mend")
     output_dir.mkdir(parents=True, exist_ok=True)
-    train(model, tokenizer, data_dir, output_dir)
+    train(mend, tokenizer, data_dir, output_dir)
 
 
 if __name__ == "__main__":

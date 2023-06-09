@@ -1,6 +1,6 @@
 import copy
 from collections import defaultdict
-from typing import Callable, List, Tuple, Dict
+from typing import Callable, List, Tuple, Dict, Optional
 
 import torch
 from torch import Tensor
@@ -27,7 +27,7 @@ def get_edit_loss_fn(model_name) -> Callable[[Tensor, Tensor], Dict[str, Tensor]
 class Mend(nn.Module):
     def __init__(
         self,
-        model: T5ForConditionalGeneration,
+        base_model: T5ForConditionalGeneration,
         model_constructor,
         update_param_names: list[str],
         mend=None,
@@ -37,7 +37,7 @@ class Mend(nn.Module):
         # The default ALG config according to the official repo
         lr: float = 1e-6,
         edit_lr: float = 1e-4,
-        # lr_lr: float = 1e-4,
+        lr_lr: float = 1e-4,
         # one_sided: bool = False,
         # n_hidden: int = 1,
         # hidden_dim: int = None,
@@ -51,9 +51,10 @@ class Mend(nn.Module):
         # mlp_class: str = "IDMLP",
         shared: bool = True,
         descent: bool = True,
+        device: str = "cuda",
     ):
         super().__init__()
-        self.base_model = model
+        self.base_model = base_model
         self.model_name = model_name
         self.model_constructor = model_constructor
         self.lr = lr
@@ -63,9 +64,10 @@ class Mend(nn.Module):
         self.loc_loss_fn = _edit_loss_fn
         self.mend = mend
         self.edit_lrs = edit_lrs
-
+        self.lr_lr = lr_lr
         self.shared = shared
         self.descent = descent
+        self.device = device
 
         self.update_param_names = update_param_names
 
@@ -83,7 +85,7 @@ class Mend(nn.Module):
         if shared:
             shape_dict = defaultdict(list)
             inner_params = get_inner_params(
-                model.named_parameters(), self.update_param_names
+                base_model.named_parameters(), self.update_param_names
             )
             for name, param in inner_params:
                 shape = self.get_shape(param)
@@ -95,7 +97,7 @@ class Mend(nn.Module):
             if not shared:
                 modules = {}
                 inner_params = get_inner_params(
-                    model.named_parameters(), self.update_param_names
+                    base_model.named_parameters(), self.update_param_names
                 )
                 for n, p in inner_params:
                     name = n.replace(".", "#")
@@ -170,6 +172,7 @@ class Mend(nn.Module):
                 for each parameter.
         """
         if self.shared:
+
             def param_idx(n, p):
                 return self.shape_dict[self.get_shape(p)].index(n)
 
@@ -190,8 +193,9 @@ class Mend(nn.Module):
                 )
         return factors
 
-    def edit(self, batch: dict[str, Tensor]):
+    def edit(self, batch: dict[str, Tensor], condition: Optional[Tensor]):
         # Forward
+        batch = {k: v.to(self.device) for k, v in batch.items()}
         outputs = self.base_model(**batch)
         logits = outputs.logits
         labels = batch["labels"]
@@ -212,7 +216,7 @@ class Mend(nn.Module):
         inner_params = get_inner_params(
             self.base_model.named_parameters(), self.update_param_names
         )
-        print('shape:', inner_params[0][1].shape)
+        print("shape:", inner_params[0][1].shape)
         transformed_factors = self.get_transform_factors(inner_params)
 
         # Should be bi,bj->ji for nn.Linear, but [annoying] GPT2 uses Conv1d instead...
@@ -308,7 +312,7 @@ def get_base_model(pretrained_name: str) -> T5ForConditionalGeneration:
 
 
 if __name__ == "__main__":
-    print('start')
+    print("start")
     UPDATE_PARAM_NAMES = [
         # "encoder.block.2.layer.1.DenseReluDense.wi.weight",
         "encoder.block.2.layer.1.DenseReluDense.wo.weight",
@@ -353,7 +357,7 @@ if __name__ == "__main__":
     }
 
     # 第一次编辑！
-    print('================ 第一次编辑！ =================')
+    print("================ 第一次编辑！ =================")
     info1 = editor.edit(batch)
     preds_after = editor.generate(input_ids)
     print("Preds before:", preds_before)
@@ -373,7 +377,7 @@ if __name__ == "__main__":
         if n == UPDATE_PARAM_NAMES[-1]
     ][0]
 
-    print(f'参数变化，{UPDATE_PARAM_NAMES[-1]}：', (orig_param - edited_param).abs().max())
+    print(f"参数变化，{UPDATE_PARAM_NAMES[-1]}：", (orig_param - edited_param).abs().max())
 
     # Get loss
 
@@ -385,7 +389,7 @@ if __name__ == "__main__":
     assert torch.allclose(nll1, outputs1.loss)
 
     # 第二次编辑！
-    print('================ 第二次编辑！ =================')
+    print("================ 第二次编辑！ =================")
     editor.eval()
     info2 = editor.edit(batch)
     print(info2)

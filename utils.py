@@ -1,12 +1,10 @@
 import datetime
 import typing
-from typing import List, Tuple, Mapping
-import struct
+from typing import List, Tuple
 import os
 from collections import defaultdict
 import math
 
-import numpy as np
 import hydra
 import torch
 import torch.nn as nn
@@ -91,10 +89,6 @@ def factorization(n):
     return [(i, n // i) for i in range(1, int(n**0.5) + 1) if n % i == 0]
 
 
-def scr():
-    return "/home/jeeves/.cache/huggingface/hub"
-
-
 def formatted_timestamp(time=None):
     if time is None:
         time = datetime.datetime.now()
@@ -136,8 +130,8 @@ def safe_backward(loss, parameters, accumulate=1, allow_unused=False, backward=F
         nan, inf = False, False
         for g in grads:
             if g is not None:
-                nan |= g.isnan().any().item()
-                inf |= g.isinf().any().item()
+                nan |= g.isnan().any().item()  # type: ignore
+                inf |= g.isinf().any().item()  # type: ignore
 
         if not (nan or inf):
             for p, g in zip(parameters, grads):
@@ -256,19 +250,19 @@ class RunningStatAverager:
         for k, v in d.items():
             if not any([k.startswith(prefix) for prefix in self.exclude]):
                 if len(self.suffix):
-                    self.underlying[f"{k}_{self.suffix}"].append(v)
+                    self.underlying[f"{k}_{self.suffix}"].append(v)  # type: ignore
                 else:
-                    self.underlying[k].append(v)
+                    self.underlying[k].append(v)  # type: ignore
 
     def average(self):
         average = {}
-        for k, v in self.underlying.items():
+        for k, v in self.underlying.items():  # type: ignore
             if not k.startswith("nll/"):
                 average[k] = sum(v) / len(v)
             else:
                 assert len(k.split("/")) == 2, f"Invalid key {k}"
                 name = k.split("/")[1]
-                token_counts = self.underlying[f"n_tokens/{name}"]
+                token_counts = self.underlying[f"n_tokens/{name}"]  # type: ignore
                 total_nll = sum([nll * c for nll, c in zip(v, token_counts)])
                 average[k] = total_nll / sum(token_counts)
                 if self.compute_ppl:
@@ -281,124 +275,6 @@ class RunningStatAverager:
 
     def reset(self):
         self.underlying = defaultdict(list)
-
-
-class EditBatchSampler:
-    def __init__(
-        self,
-        n,
-        memorize_mode=False,
-        loc_disjoint=True,
-        seed=0,
-        hard_neg=False,
-        hard_neg_prob=1.0,
-        loc_distr_matrix=None,
-        loc_idx_matrix=None,
-        keep_probs=None,
-        mutex=None,
-    ):
-        self.memorize_mode = memorize_mode
-        self.n = n
-        self.loc_disjoint = loc_disjoint
-        self.rng = np.random.default_rng(seed)
-        self.hard_neg = hard_neg
-        self.hard_neg_prob = hard_neg_prob
-        self.loc_probs = loc_distr_matrix
-        self.loc_idxs = loc_idx_matrix
-        self.keep_probs = (
-            np.array(keep_probs)[: self.n] if keep_probs is not None else None
-        )
-        self.mutex = mutex[: self.n] if mutex is not None else None
-        self._init()
-
-    def _init(self):
-        idxs = np.arange(self.n)
-        if self.keep_probs is not None:
-            sample = self.rng.binomial(1, self.keep_probs).astype(np.bool)
-            idxs = idxs[sample]
-
-        self.perm = self.rng.permutation(idxs)
-        self.edit_position = 0
-
-    def get_edit_idxs(self, batch_size):
-        if self.mutex is None:
-            idxs = set(
-                [
-                    int(idx)
-                    for idx in self.perm[
-                        self.edit_position : self.edit_position + batch_size
-                    ]
-                ]
-            )
-            self.edit_position += batch_size
-        else:
-            mutexes = []
-            idxs = []
-
-            def notin(x, mutexes):
-                for m in mutexes:
-                    if x in m or m in x:
-                        return False
-                return True
-
-            while len(idxs) < batch_size:
-                new_idx = self.perm[self.edit_position]
-                if notin(self.mutex[new_idx], mutexes):
-                    mutexes.append(self.mutex[new_idx])
-                    idxs.append(int(new_idx))
-                self.edit_position += 1
-                if self.edit_position == self.perm.shape[0]:
-                    return None
-
-            idxs = set(idxs)
-
-        return idxs
-
-    def sample(self, batch_size, return_hard_flag=False):
-        if self.memorize_mode:
-            return list(range(batch_size)), list(range(batch_size, batch_size * 2))
-
-        if self.edit_position + batch_size >= self.perm.shape[0]:
-            self._init()  # Re-start if we end with a partially-sized batch
-
-        edit_idxs = self.get_edit_idxs(batch_size)
-        if edit_idxs is None:
-            self._init()
-            edit_idxs = self.get_edit_idxs(batch_size)
-            if edit_idxs is None:
-                raise RuntimeError(f"No valid batches of size {batch_size} exist!")
-
-        if self.hard_neg:
-            assert (
-                self.loc_probs is not None
-            ), "hard_neg is on, but don't have distance matrix!"
-
-        def get_loc_idxs():
-            if self.hard_neg and self.rng.uniform() < self.hard_neg_prob:
-                return [
-                    int(self.rng.choice(self.loc_idxs[idx], p=self.loc_probs[idx]))
-                    for idx in edit_idxs
-                ], True
-            else:
-                # Use deterministic implementation in case edit batches are large
-                non_edit_idxs = list(set(range(self.n)) - set(edit_idxs))
-                return [
-                    int(idx) for idx in self.rng.choice(non_edit_idxs, batch_size)
-                ], False
-
-        loc_idxs, hard = get_loc_idxs()
-        if self.loc_disjoint:
-            steps = 0
-            while len(edit_idxs.intersection(set(loc_idxs))) > 0:
-                loc_idxs, hard = get_loc_idxs()
-                steps += 1
-                if steps > 100:
-                    raise RuntimeError("Can't find disjoint loc_idxs and edit_idxs!")
-
-        if return_hard_flag:
-            return list(edit_idxs), loc_idxs, hard
-        else:
-            return list(edit_idxs), loc_idxs
 
 
 def parent_module(model, pname):
@@ -414,3 +290,26 @@ def parent_module(model, pname):
             raise RuntimeError(f"Couldn't find child module {comp}")
     assert hasattr(parent, comps[-1])
     return parent
+
+
+def get_num_params(module: torch.nn.Module):
+    return sum([p.numel() for p in module.parameters()])
+
+
+def save_ckpt(model, optimizer, scheduler, stats, path):
+    ckpt = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "stats": stats,
+    }
+    torch.save(ckpt, path)
+
+
+def load_ckpt(model, optimizer, scheduler, path):
+    ckpt = torch.load(path)
+    model.load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    scheduler.load_state_dict(ckpt["scheduler"])
+    stats = ckpt["stats"]
+    return stats

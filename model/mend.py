@@ -36,7 +36,7 @@ class Mend(nn.Module):
         model_name: str = "google/t5-small-ssm-nq",
         # The default ALG config according to the official repo
         lr: float = 1e-6,
-        edit_lr: float = 1e-4,
+        edit_lr: float = 1e-4,  # Learning of each learnable module
         lr_lr: float = 1e-4,
         # one_sided: bool = False,
         # n_hidden: int = 1,
@@ -193,7 +193,7 @@ class Mend(nn.Module):
                 )
         return factors
 
-    def edit(self, batch: dict[str, Tensor], condition: Optional[Tensor]):
+    def edit(self, batch: dict[str, Tensor]):
         # Forward
         batch = {k: v.to(self.device) for k, v in batch.items()}
         outputs = self.base_model(**batch)

@@ -230,17 +230,26 @@ class EditorTrainer:
         """
         One step of editing.
         """
+        print(f"==== Edit step (training={is_training}) ====")
         self.editor.train(is_training)
         self.base_model.train(is_training)
 
+        print(batch)
+
+        # Extract batches
+        batch_loc = {k: v.to(self.device) for k, v in batch["loc"].items()}
+        # batch_edit = {k: v.to(self.device) for k, v in batch["edit"].items()}
+        # batch_cond = {k: v.to(self.device) for k, v in batch["cond"].items()}
+        batch_edit_inner = {k: v.to(self.device) for k, v in batch["edit_inner"].items()}
+        batch_edit_outer = {k: v.to(self.device) for k, v in batch["edit_outer"].items()}
+
         with torch.no_grad():
             # Use logits on local examples to constrain the edit scope
-            batch_local = {k: v.to(self.device) for k, v in batch["loc"].items()}
-            base_logits = self.editor(**batch_local)
+            base_logits = self.editor(**batch_loc).logits
 
         # Do the edit
         start_time = time.time()
-        model_info = self.editor.edit(batch["edit_inner"], batch["cond"])
+        model_info = self.editor.edit(batch_edit_inner)
         edit_time = time.time() - start_time
         edited_model = self.editor.base_model
         edited_model.train(is_training)
@@ -251,38 +260,39 @@ class EditorTrainer:
             pos_pairs = batch["pos_pairs"]
             has_outer_data = pos_pairs.numel() > 0
             if has_outer_data:
-                post_edit_logits = edited_model(**batch["edit_outer"])
+                post_edit_logits = edited_model(**batch_edit_outer).logits
                 post_edit_dict = self.editor.edit_loss_fn(
                     post_edit_logits,
-                    batch["edit_outer"]["labels"],
+                    batch_edit_outer["labels"],
                 )
-                l_edit: Tensor = post_edit_dict["nll"]
+                loss_edit: Tensor = post_edit_dict["nll"]
             else:
                 post_edit_dict = {}
-                l_edit = torch.tensor(0.0)
+                loss_edit = torch.tensor(0.0)
 
             # Locality loss
-            post_base_logits = edited_model(**batch["loc"])
-            kl_mask = batch["loc"].get(
-                "decoder_attention_mask", batch["loc"]["attention_mask"]
+            post_base_logits = edited_model(**batch_loc).logits
+            kl_mask = batch_loc.get(
+                "decoder_attention_mask", batch_loc["attention_mask"]
             )
-            l_loc: Tensor = kl_loc_loss(
+            loss_loc: Tensor = kl_loc_loss(
                 base_logits.detach(), post_base_logits, mask=kl_mask
             )
 
-        l_total_edit: Tensor = self.cedit * l_edit + self.cloc * l_loc
+        total_edit_loss: Tensor = self.cedit * loss_edit + self.cloc * loss_loc
 
+        # Backward
         if is_training:
             safe_backward(
-                l_total_edit,
+                total_edit_loss,
                 self.editor.outer_parameters(),
                 accumulate=self.grad_acc_steps,
             )
 
         # Compute info
-        info_dict["loss/edit"] = l_edit.item()
-        info_dict["loss/loc"] = l_loc.item()
-        info_dict["kl/edit"] = l_loc.item()
+        info_dict["loss/edit"] = loss_edit.item()
+        info_dict["loss/loc"] = loss_loc.item()
+        info_dict["kl/edit"] = loss_loc.item()
         if has_outer_data:
             info_dict["edit/acc"] = post_edit_dict["acc"].item()
             info_dict["edit/log_prob"] = post_edit_dict["log_prob"].item()
@@ -303,13 +313,13 @@ class EditorTrainer:
                     info_dict[f"stat_dump/{k}"] = v
 
         l_base = torch.tensor(0.0)
-        l_total = l_total_edit + self.cbase * l_base
+        l_total = total_edit_loss + self.cbase * l_base
         info_dict["loss/total"] = l_total.item()
-        info_dict["loss/total_edit"] = l_total_edit.item()
+        info_dict["loss/total_edit"] = total_edit_loss.item()
         info_dict["memory/alloc_max"] = torch.cuda.max_memory_allocated()
         info_dict["memory/res_max"] = torch.cuda.max_memory_reserved()
         info_dict = {**info_dict, **model_info}
-        return l_total, l_edit, l_loc, l_base, info_dict  # type: ignore
+        return l_total, loss_edit, loss_loc, l_base, info_dict  # type: ignore
 
     def train_step(self):
         batch = next(self.edit_gen)

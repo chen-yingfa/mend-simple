@@ -278,46 +278,62 @@ class QaDataset(Dataset):
             implq = impla = None
         return implq, impla
 
+    def get_outer_qa(
+        self,
+        idx: int,
+        question: str,
+        orig_label: str,
+        rephrase: str,
+        new_label: str,
+    ):
+        """
+        Get outer QA for the given example.
+        """
+        escaped_orig_label = re.escape(orig_label)
+        qa_impl = self.get_impl(idx, escaped_orig_label, new_label, orig_label)
+        qa_boolq = self.get_boolq(idx, escaped_orig_label, new_label)
+
+        # Random choose QA to use as outer QA (as locality constraint?)
+        if self.zsre_impl_name is not None and qa_impl[1] is not None:
+            prob_impl = 1
+        else:
+            prob_impl = 0
+
+        if self.zsre_boolq_name is not None and qa_boolq[1] is not None:
+            prob_boolq = 1
+        else:
+            prob_boolq = 0
+        probs = np.array([1.0, 1.0, prob_impl, prob_boolq])
+        main_type, rephrase_type, impl_type, boolq_type = range(4)
+        outer_type = np.random.choice(
+            [main_type, rephrase_type, impl_type, boolq_type], p=probs / probs.sum()
+        )
+        if outer_type == main_type:
+            outer_q, outer_a = question, new_label
+            outer_type = 'main'
+        elif outer_type == rephrase_type:
+            outer_q, outer_a = rephrase, new_label
+            outer_type = 'rephrase'
+        elif outer_type == impl_type:
+            outer_q, outer_a = qa_impl
+            outer_type = 'impl'
+        elif outer_type == boolq_type:
+            outer_q, outer_a = qa_boolq
+            outer_type = 'boolq'
+        else:
+            raise ValueError("Invalid outer type")
+
+        return outer_q, outer_a, outer_type
+
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx: int) -> dict:
         eg = self.examples[idx]
-        orig_label = eg["output"][0]["answer"]
-        escaped_orig_label = re.escape(orig_label)
-        new_label = random.choice(eg["alternatives"])
-
-        question_impl, ans_impl = self.get_impl(
-            idx, escaped_orig_label, new_label, orig_label
-        )
-        question_boolq, ans_boolq = self.get_boolq(idx, escaped_orig_label, new_label)
         question = eg["input"]
+        orig_label = eg["output"][0]["answer"]
+        new_label = random.choice(eg["alternatives"])
         rephrase = random.choice(eg["filtered_rephrases"])
-
-        MAIN, REPHRASE, IMPL, YN = range(4)
-        if self.zsre_impl_name is not None and ans_boolq is None:
-            prob_impl = 1
-        else:
-            prob_impl = 0
-
-        if self.zsre_boolq_name is not None and ans_boolq is not None:
-            prob_boolq = 1
-        else:
-            prob_boolq = 0
-        probs = np.array([1.0, 1.0, prob_impl, prob_boolq])
-
-        # Randomly pick one data type
-        outer_type = np.random.choice([MAIN, REPHRASE, IMPL, YN], p=probs / probs.sum())
-        if outer_type == MAIN:
-            outer_q, outer_a = question, new_label
-        elif outer_type == REPHRASE:
-            outer_q, outer_a = rephrase, new_label
-        elif outer_type == IMPL:
-            outer_q, outer_a = question_impl, ans_impl
-        elif outer_type == YN:
-            outer_q, outer_a = question_boolq, ans_boolq
-        else:
-            raise RuntimeError
 
         answers = [x["answer"] for x in eg["output"]]
         cond = "{} >> {} || {}".format(
@@ -325,7 +341,11 @@ class QaDataset(Dataset):
             new_label,
             eg["input"],
         )
-        is_hard = outer_type == IMPL or outer_type == YN
+
+        outer_q, outer_a, outer_type = self.get_outer_qa(
+            idx, question, orig_label, rephrase, new_label
+        )
+        is_hard = outer_type in ['impl', 'boolq']
         output = {
             "src": question,
             "pred": eg["prediction"],
@@ -340,20 +360,22 @@ class QaDataset(Dataset):
         return output
 
     def collate_fn(self, batch):
-        src = [b["src"] for b in batch]
-        ne = len(src) // 2  # self.config.data.n_edits
-        trg = [b["answers"][0] for b in batch[:-ne]] + [b["alt"] for b in batch[-ne:]]
+        input_texts = [b["src"] for b in batch]
+        num_edits = len(input_texts) // 2  # self.config.data.n_edits
+        target_texts = [b["answers"][0] for b in batch[:-num_edits]]
+        target_texts += [b["alt"] for b in batch[-num_edits:]]
 
         batch_data = {
-            "src": src,
-            "trg": trg,
-            "cond": [b["cond"] for b in batch[-ne:]],
-            "outer_q": [b["outer_q"] for b in batch[-ne:]],
-            "outer_a": [b["outer_a"] for b in batch[-ne:]],
+            "src": input_texts,
+            "trg": target_texts,
+            "cond": [b["cond"] for b in batch[-num_edits:]],
+            "outer_q": [b["outer_q"] for b in batch[-num_edits:]],
+            "outer_a": [b["outer_a"] for b in batch[-num_edits:]],
         }
         print(batch_data)
         batches = {}
         for k1, v1 in batch_data.items():
+            print(v1)
             encodings = self.tokenizer(
                 v1,
                 return_tensors="pt",
@@ -362,7 +384,7 @@ class QaDataset(Dataset):
                 truncation=True,
             )
             for k2, v2 in encodings.items():
-                batches[f'{k1}_{k2}'] = v2
+                batches[f"{k1}_{k2}"] = v2
 
         if self.is_bart():  # For consistency with de Cao et al
             batches["trg_input_ids"][:, 0] = self.tokenizer.eos_token_id
@@ -443,7 +465,9 @@ class QaDataset(Dataset):
             edit_inner["attention_mask"] = toks["src_attention_mask"][-batch_size:]
             if self.is_bart():
                 edit_inner["decoder_input_ids"] = toks["trg_input_ids"][-batch_size:]
-                edit_inner["decoder_attention_mask"] = toks["trg_attention_mask"][-batch_size:]
+                edit_inner["decoder_attention_mask"] = toks["trg_attention_mask"][
+                    -batch_size:
+                ]
             edit_inner["labels"] = self.mask_padding_for_labels(
                 toks["trg_input_ids"][-batch_size:]
             )

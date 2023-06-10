@@ -150,7 +150,15 @@ class EditorTrainer:
         ]
         dump = {'step': step}
         for key in keys:
-            dump[key] = info_dict[key]
+            if 'time/' in key:
+                val = round(info_dict[key], 1)
+            elif 'loss/' in key:
+                val = round(info_dict[key], 6)
+            elif 'lr/' in key:
+                val = round(info_dict[key], 6)
+            else:
+                val = info_dict[key]
+            dump[key] = val
         print(dump)
         print(dump, file=self.train_log_file)
 
@@ -179,7 +187,7 @@ class EditorTrainer:
                     averager.reset()
                     self.train_log(self.global_step, avg_info)
 
-            if self.global_step % self.eval_interval == 0:
+            if self.global_step % self.eval_interval == 0 or self.global_step == 1:
                 dev_result = self.validate(steps=self.val_steps)
                 print({"step": self.global_step, "dev": dev_result})
 
@@ -345,18 +353,18 @@ class EditorTrainer:
         step_time = (time.time() - start_time) / (step + 1)
         progress = f"{step+1}/{total_num_steps}".ljust(20)
         acc = f"{stats['edit/acc_val']:<12.5f}"
-        if self.task in ["fc"]:
+        if self.task in ["fc", 'qa']:
             draw_pre = f"{stats['acc/pre_val']:<12.5f}"
             draw_post = f"{stats['acc/post_val']:<12.5f}"
             draw_diff = f"{stats['acc/pre_val']-stats['acc/post_val']:<12.5f}"
             drawdown_name = "acc"  # drawdown name
-        elif self.task.endswith("nli") or self.task in ["qa"]:
-            draw_pre = ""
-            draw_post = ""
-            draw_diff = f"{stats['retain/edit_val']:<12.5f}"
-            drawdown_name = "retain"
+        # elif self.task.endswith("nli") or self.task in ["qa"]:
+        #     draw_pre = ""
+        #     draw_post = ""
+        #     draw_diff = f"{stats['retain/edit_val']:<12.5f}"
+        #     drawdown_name = "retain"
         else:
-            raise ValueError(f"Didn't recognize task {self.task}")
+            raise ValueError(f"Invalid task: {self.task}")
 
         print(
             f"Batch {progress}"
@@ -364,7 +372,7 @@ class EditorTrainer:
             f" {drawdown_name}_pre: {draw_pre}"
             f" {drawdown_name}_post: {draw_post}"
             f" {drawdown_name}_delta: {draw_diff}"
-            f" it_time: {step_time:.4f}"
+            f" it_time: {step_time:.1f}"
         )
 
     def validate(self, steps: Optional[int] = None, do_log: bool = True):
@@ -385,7 +393,6 @@ class EditorTrainer:
         start_time = time.time()
         for step, batch in enumerate(edit_gen):
             _, _, _, _, info_dict = self.edit_step(batch, is_training=False)
-            # print(f'[validate] step: {step}, info_dict: {info_dict}')
             averager.add(info_dict)
 
             if do_log and step % self.log_interval == 0:

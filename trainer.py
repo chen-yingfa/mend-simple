@@ -3,8 +3,6 @@ from pathlib import Path
 from typing import Optional, Union, Tuple
 
 import torch
-from torch import Tensor
-from metrics import retain_rate
 from losses import kl_loc_loss
 
 # import utils
@@ -16,10 +14,6 @@ from utils import (
     EarlyStopper,
 )
 from data.zsre import QaDataset
-
-
-def _logits(x):
-    return x if not hasattr(x, "logits") else x.logits
 
 
 class EditorTrainer:
@@ -42,7 +36,7 @@ class EditorTrainer:
         optim_name: str = "Adam",
         grad_clip: float = 100.0,
         max_iters: int = 1000000,
-        log_interval: int = 100,
+        log_interval: int = 20,
         # archive: Optional[str] = None,
     ):
         self.editor = editor
@@ -84,59 +78,6 @@ class EditorTrainer:
                 self.editor.outer_parameters(grouped=True), lr=lr
             )
             print(f"Built optimizer {self.opt}")
-        # if archive is not None:
-        #     archive, config.archive = utils.load_archive(str(archive))
-        #     print("WHY DO WE HAVE TO DO THIS NOW?")
-        #     if "model_config" in archive["model"]:
-        #         archive["model"]["model_config"].torch_dtype = str(
-        #             archive["model"]["model_config"].torch_dtype
-        #         )
-        #     self.editor.load_state_dict(archive["model"])
-        #     del archive["model"]
-        #     if not self.config.eval_only:
-        #         self.opt.load_state_dict(archive["opt"])
-        #     del archive["opt"]
-
-        #     self.archive = (
-        #         archive  # Save for later to load e.g. lr_opt params if they exist
-        #     )
-        # else:
-        #     self.archive = None
-
-        # # outfiles
-        # with open(os.getcwd() + "/config.json", "w") as f:
-        #     json.dump(OmegaConf.to_container(config), f)
-
-        # model_dir = os.path.join(os.getcwd(), 'models')
-        # cwd = Path(os.getcwd())
-        # model_dir = cwd / "models"
-        # if not (self.config.debug and not self.config.save):
-        #     os.makedirs(model_dir)
-        # run_date = os.getcwd().split('/')[-1]
-        # run_date = cwd.name
-
-        # self.run_date = run_date
-        # Make sure no slashes
-        # safe_model_name = self.config.model.name.split("/")[-1]
-        # self.save_path = f"{model_dir}/{safe_model_name}.{run_date}"
-        # self.save_path = model_dir / f"{safe_model_name}.{run_date}"
-
-        # if not (self.config.debug or self.config.eval_only):
-        #     wandb_dir = tempfile.mkdtemp()
-        #     wandb_name = f"{self.config.dataset} - {self.config.alg} - "
-        #           f"{safe_model_name} - {run_date}"
-        #     if self.config.ref is not None:
-        #         wandb_name += f" - {self.config.ref}"
-        #     print(f'Writing wandb run "{wandb_name}" to {wandb_dir}')
-        #     wandb.init(
-        #         project="serac",
-        #         config=utils.flatten_dict(self.config),
-        #         name=wandb_name,
-        #         dir=wandb_dir,
-        #         tags=[self.config.ref] if self.config.ref is not None else None,
-        #     )
-
-        # self.start_time = formatted_timestamp()
 
         self.edit_gen = train_data.iter_edit_batches(batch_size=batch_size)
 
@@ -191,6 +132,7 @@ class EditorTrainer:
         print("==== Training starts ====")
         print(f"Max iters: {self.max_iters}")
         while self.global_step < self.max_iters:
+            self.global_step += 1
             if not self.eval_only:
                 train_info = self.train_step()
                 averager.add(train_info)
@@ -214,7 +156,6 @@ class EditorTrainer:
                         f" for {self.early_stop_patience} steps"
                     )
                     break
-            self.global_step += 1
         print("==== Training done ====")
 
         if not self.eval_only:
@@ -230,18 +171,18 @@ class EditorTrainer:
         """
         One step of editing.
         """
-        print(f"==== Edit step (training={is_training}) ====")
+        # print(f"==== Edit step (training={is_training}) ====")
         self.editor.train(is_training)
         self.base_model.train(is_training)
 
-        print(batch)
-
         # Extract batches
         batch_loc = {k: v.to(self.device) for k, v in batch["loc"].items()}
-        # batch_edit = {k: v.to(self.device) for k, v in batch["edit"].items()}
-        # batch_cond = {k: v.to(self.device) for k, v in batch["cond"].items()}
-        batch_edit_inner = {k: v.to(self.device) for k, v in batch["edit_inner"].items()}
-        batch_edit_outer = {k: v.to(self.device) for k, v in batch["edit_outer"].items()}
+        batch_edit_inner = {
+            k: v.to(self.device) for k, v in batch["edit_inner"].items()
+        }
+        batch_edit_outer = {
+            k: v.to(self.device) for k, v in batch["edit_outer"].items()
+        }
 
         with torch.no_grad():
             # Use logits on local examples to constrain the edit scope
@@ -249,82 +190,101 @@ class EditorTrainer:
 
         # Do the edit
         start_time = time.time()
-        model_info = self.editor.edit(batch_edit_inner)
+        edited_model, model_info = self.editor.edit(batch_edit_inner)
         edit_time = time.time() - start_time
-        edited_model = self.editor.base_model
-        edited_model.train(is_training)
 
-        info_dict = {}
+        # Compute loss
         with torch.set_grad_enabled(is_training):
             # Editing loss
-            pos_pairs = batch["pos_pairs"]
-            has_outer_data = pos_pairs.numel() > 0
-            if has_outer_data:
-                post_edit_logits = edited_model(**batch_edit_outer).logits
-                post_edit_dict = self.editor.edit_loss_fn(
-                    post_edit_logits,
-                    batch_edit_outer["labels"],
-                )
-                loss_edit: Tensor = post_edit_dict["nll"]
-            else:
-                post_edit_dict = {}
-                loss_edit = torch.tensor(0.0)
+            post_edit_logits = edited_model(**batch_edit_outer).logits
+            l_edit = self.editor.edit_loss_fn(
+                post_edit_logits, batch_edit_outer["labels"]
+            )["nll"]
 
             # Locality loss
             post_base_logits = edited_model(**batch_loc).logits
             kl_mask = batch_loc.get(
                 "decoder_attention_mask", batch_loc["attention_mask"]
             )
-            loss_loc: Tensor = kl_loc_loss(
-                base_logits.detach(), post_base_logits, mask=kl_mask
-            )
+            l_loc = kl_loc_loss(base_logits.detach(), post_base_logits, mask=kl_mask)
 
-        total_edit_loss: Tensor = self.cedit * loss_edit + self.cloc * loss_loc
+        l_total_edit = self.cedit * l_edit + self.cloc * l_loc
 
         # Backward
         if is_training:
+            outer_params = self.editor.outer_parameters()
             safe_backward(
-                total_edit_loss,
-                self.editor.outer_parameters(),
+                l_total_edit,
+                outer_params,
                 accumulate=self.grad_acc_steps,
             )
 
-        # Compute info
-        info_dict["loss/edit"] = loss_edit.item()
-        info_dict["loss/loc"] = loss_loc.item()
-        info_dict["kl/edit"] = loss_loc.item()
-        if has_outer_data:
-            info_dict["edit/acc"] = post_edit_dict["acc"].item()
-            info_dict["edit/log_prob"] = post_edit_dict["log_prob"].item()
-            info_dict["edit/prob"] = post_edit_dict["prob"].item()
+        # Collect some useful metrics
+        with torch.no_grad():
+            post_edit_dict = self.editor.edit_loss_fn(
+                post_edit_logits, batch_edit_outer["labels"]
+            )
+            post_loc_dict = self.editor.loc_loss_fn(
+                post_base_logits, batch_loc["labels"]
+            )
+            pre_loc_dict = self.editor.loc_loss_fn(base_logits, batch_loc["labels"])
 
-        info_dict["retain/edit"] = retain_rate(
-            base_logits, post_base_logits, batch["loc"]["labels"] != -100
-        )
+        info_dict = {}
+        info_dict["loss/edit"] = l_edit.item()
+        info_dict["loss/loc"] = l_loc.item()
+        info_dict["edit/acc"] = post_edit_dict["acc"].item()
+        info_dict["edit/log_prob"] = post_edit_dict["log_prob"].item()
+        info_dict["edit/prob"] = post_edit_dict["prob"].item()
+        info_dict["acc/pre"] = pre_loc_dict["acc"].item()
+        info_dict["acc/post"] = post_loc_dict["acc"].item()
+        info_dict["nll/pre"] = pre_loc_dict["nll"].item()
+        info_dict["nll/post"] = post_loc_dict["nll"].item()
+        info_dict["n_tokens/pre"] = post_loc_dict["n_tokens"]
+        info_dict["n_tokens/post"] = post_loc_dict["n_tokens"]
         info_dict["time/edit"] = edit_time
 
-        if has_outer_data:
-            if self.task == "sent":
-                info_dict["edit/acc_sent"] = post_edit_dict["acc_sent"].item()
-            for k, v in post_edit_dict.items():
-                if isinstance(v, torch.Tensor):
-                    info_dict[f"stat_dump/{k}"] = v.item()
-                else:
-                    info_dict[f"stat_dump/{k}"] = v
+        # Base loss
+        if self.train_base:
+            with torch.no_grad():
+                original_logits = self.original_model(**batch_loc).logits
+                original_loc_dict = self.model.loc_loss_fn(
+                    original_logits, batch_loc["labels"]
+                )
 
-        l_base = torch.tensor(0.0)
-        l_total = total_edit_loss + self.cbase * l_base
+            base_logits = self.model(**batch_loc)
+            l_base = kl_loc_loss(
+                original_logits.detach(), base_logits, mask=kl_mask.detach()
+            )
+
+            if is_training:
+                safe_backward(
+                    l_base,
+                    self.model.outer_parameters(),
+                    self.accumulate_bs,
+                    allow_unused=True,
+                )
+
+            info_dict["loss/base"] = l_base.item()
+            info_dict["nll/original"] = original_loc_dict["nll"].item()
+            info_dict["acc/original"] = original_loc_dict["acc"].item()
+            info_dict["n_tokens/original"] = original_loc_dict["n_tokens"]
+        else:
+            l_base = torch.tensor(0.0)
+
+        l_total = l_total_edit + self.cbase * l_base
+
         info_dict["loss/total"] = l_total.item()
-        info_dict["loss/total_edit"] = total_edit_loss.item()
+        info_dict["loss/total_edit"] = l_total_edit.item()
         info_dict["memory/alloc_max"] = torch.cuda.max_memory_allocated()
         info_dict["memory/res_max"] = torch.cuda.max_memory_reserved()
         info_dict = {**info_dict, **model_info}
-        return l_total, loss_edit, loss_loc, l_base, info_dict  # type: ignore
+
+        return l_total, l_edit, l_loc, l_base, info_dict
 
     def train_step(self):
         batch = next(self.edit_gen)
-        edit_info = self.edit_step(batch, is_training=True)
-        info_dict = edit_info[-1]
+        edit_output = self.edit_step(batch, is_training=True)
+        info_dict = edit_output[-1]
         # Backward
         if self.global_step > 0 and self.global_step % self.grad_acc_steps == 0:
             grad = torch.nn.utils.clip_grad_norm_(  # type: ignore
@@ -368,7 +328,7 @@ class EditorTrainer:
             f" it_time: {step_time:.4f}"
         )
 
-    def validate(self, steps: Optional[int] = None, do_log: bool = False):
+    def validate(self, steps: Optional[int] = None, do_log: bool = True):
         """
         Perform validation on the dev set.
         """
@@ -378,15 +338,15 @@ class EditorTrainer:
         num_batches = steps // self.batch_size
         print("==== Evaluation begin ====")
         print(f"# batch: {num_batches}")
+        print(f"Batch size: {self.batch_size}")
         averager = RunningStatAverager("val")
         edit_gen = self.dev_data.iter_edit_batches(
             batch_size=self.batch_size, num_examples=steps
         )
-
         start_time = time.time()
-        for step in range(num_batches):
-            batch = next(edit_gen)
+        for step, batch in enumerate(edit_gen):
             _, _, _, _, info_dict = self.edit_step(batch, is_training=False)
+            # print(f'[validate] step: {step}, info_dict: {info_dict}')
             averager.add(info_dict)
 
             if do_log and step % self.log_interval == 0:
@@ -396,7 +356,7 @@ class EditorTrainer:
 
         if do_log:
             self._inline_validation_log(
-                step, averager.average(), start_time, num_batches
+                num_batches, averager.average(), start_time, num_batches
             )
         elapsed = time.time() - start_time
         result = averager.average()

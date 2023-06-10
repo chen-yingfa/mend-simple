@@ -8,6 +8,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import T5ForConditionalGeneration, GPT2LMHeadModel
 
+from higher.patch import (
+    _MonkeyPatchBase,
+    _torch,
+    _typing,
+    _utils,
+    buffer_sync,
+    make_functional,
+)
 from hooks import hook_model
 from utils import get_inner_params
 from losses import masked_log_probs
@@ -15,7 +23,7 @@ from utils import should_shift_targets
 from .grad_transform import GradientTransform
 
 
-def get_edit_loss_fn(model_name) -> Callable[[Tensor, Tensor], Dict[str, Tensor]]:
+def get_edit_loss_fn(model_name: str) -> Callable[[Tensor, Tensor], Dict[str, Tensor]]:
     def _edit_loss_fn(pred, targ, **kwargs):
         return masked_log_probs(
             pred, targ, shift=should_shift_targets(model_name), **kwargs
@@ -62,7 +70,6 @@ class Mend(nn.Module):
         _edit_loss_fn = get_edit_loss_fn(model_name)
         self.edit_loss_fn = _edit_loss_fn
         self.loc_loss_fn = _edit_loss_fn
-        self.mend = mend
         self.edit_lrs = edit_lrs
         self.lr_lr = lr_lr
         self.shared = shared
@@ -92,8 +99,8 @@ class Mend(nn.Module):
                 shape_dict[shape].append(name)
             self.shape_dict = shape_dict
 
-        if self.mend is None:
-            print("Mend is None, initting")
+        if mend is None:
+            print("[Mend.__init__] Mend is None, initting")
             if not shared:
                 modules = {}
                 inner_params = get_inner_params(
@@ -107,10 +114,8 @@ class Mend(nn.Module):
             else:
                 modules = {}
                 for shape in shape_dict.keys():
-                    # print(shape)
                     shape_str = str(tuple(shape))
                     num_modes = len(shape_dict[shape])
-                    # print(shape_str, num_modes)
                     modules[shape_str] = GradientTransform(*shape, num_modes=num_modes)
                 self.mend = nn.ModuleDict(modules)
         else:
@@ -140,9 +145,9 @@ class Mend(nn.Module):
         config = state_dict["model_config"]
         del state_dict["model_config"]
         if config != self.base_model.config:
-            print("Loaded model config doesn't match current model ")
-            print(f"Loaded: {config}")
-            print(f"Current: {self.base_model.config}")
+            print("[load_state_dict] Loaded model config doesn't match current model ")
+            print(f"[load_state_dict] Loaded: {config}")
+            print(f"[load_state_dict] Current: {self.base_model.config}")
 
         res = super().load_state_dict(state_dict, False)
         # We should only have missing keys for the model, and no unexpected keys
@@ -172,28 +177,27 @@ class Mend(nn.Module):
                 for each parameter.
         """
         if self.shared:
-
             def param_idx(n, p):
                 return self.shape_dict[self.get_shape(p)].index(n)
 
             factors = {}
             for name, params in inner_params:
                 mend_key = str(tuple(self.get_shape(params)))
-                mode = param_idx(name, params)
-                print("mode:", mode)
-                print(type(params))
+                idx = param_idx(name, params)
+                # print("[get_transform_factors] idx:", idx)
                 factors[name] = self.mend[mend_key](
-                    params.__x__, params.__delta__, mode
+                    params.__x__, params.__delta__, idx
                 )
         else:
             factors = {}
             for name, params in inner_params:
-                factors[name] = self.mend[name.replace(".", "#")](
+                mend_key = name.replace(".", "#")
+                factors[name] = self.mend[mend_key](
                     params.__x__, params.__delta__
                 )
         return factors
 
-    def edit(self, batch: dict[str, Tensor]):
+    def edit(self, batch: dict[str, Tensor], detach_history: bool = False):
         # Forward
         batch = {k: v.to(self.device) for k, v in batch.items()}
         outputs = self.base_model(**batch)
@@ -210,13 +214,9 @@ class Mend(nn.Module):
         loss.backward()
 
         # Transform gradients to parameter updates
-        for n, p in self.base_model.named_parameters():
-            print(type(p))
-            break
         inner_params = get_inner_params(
             self.base_model.named_parameters(), self.update_param_names
         )
-        print("shape:", inner_params[0][1].shape)
         transformed_factors = self.get_transform_factors(inner_params)
 
         # Should be bi,bj->ji for nn.Linear, but [annoying] GPT2 uses Conv1d instead...
@@ -246,55 +246,34 @@ class Mend(nn.Module):
 
         self.base_model.zero_grad()
         assert len(self.edit_lrs) == len(list(mean_grads.items()))
+
         updates = {n: lr * g for lr, (n, g) in zip(self.edit_lrs, mean_grads.items())}
 
-        # edited_model: T5ForConditionalGeneration = self.base_model
-        # if not isinstance(edited_model, higher.patch._MonkeyPatchBase):
-        #     # edited_model = make_functional(edited_model, in_place=True)
-        #     # for p in edited_model.parameters():
-        #     #     print(type(p))
-        #     #     break
-        #     # edited_model = make_functional(edited_model, track_higher_grads=False)
-        #     self.edited_model = self.model_constructor(self.base_model)
+        edited_model: nn.Module = self.base_model
+        if not isinstance(edited_model, _MonkeyPatchBase):
+            edited_model = monkeypatch(edited_model, in_place=True)
 
-        #     # for p in edited_model.parameters():
-        #     #     print(type(p))
-        #     #     break
-        #     print('================================================')
-
-        state_dict = self.base_model.state_dict()
-        for name in self.update_param_names:
-            if self.descent:
-                state_dict[name] -= updates[name]
+        new_params = []
+        for name, param in edited_model.named_parameters():
+            if name in self.update_param_names:
+                new_params.append(param + updates[name])
             else:
-                state_dict[name] += updates[name]
-        self.base_model.load_state_dict(state_dict)
-        # new_params = {}
-        # for name, params in edited_model.named_parameters():
-        #     if name in set(self.update_param_names):
-        #         if self.descent:
-        #             new_params[name] = params - updates[name]
-        #         else:
-        #             new_params[name] = params + updates[name]
-        #     else:
-        #         new_params[name] = params
+                new_params.append(param)
+        edited_model.update_params(new_params)
 
-        # # edited_model.update_params(new_params)
-        # edited_model.load_state_dict(new_params)
+        if detach_history:
+            new_model = self.model_constructor()
+            new_model.load_state_dict(edited_model.state_dict())
+            edited_model = new_model
 
-        # if detach_history:
-        #     new_model = self.model_constructor()
-        #     new_model.load_state_dict(edited_model.state_dict())
-        #     edited_model = new_model
-
-        # edited_mend = Mend(
-        #     self.edited_model,
-        #     self.model_constructor,
-        #     update_param_names=self.update_param_names,
-        #     mend=self.mend,
-        #     edit_lrs=self.edit_lrs,
-        # )
-        return info_dict
+        new_editor = Mend(
+            edited_model,
+            self.model_constructor,
+            update_param_names=self.update_param_names,
+            mend=self.mend,
+            edit_lrs=self.edit_lrs,
+        )
+        return new_editor, info_dict
 
     def forward(self, *inputs, **kwargs):
         return self.base_model(*inputs, **kwargs)
@@ -395,3 +374,61 @@ if __name__ == "__main__":
     print(info2)
     outputs2 = editor(input_ids, labels=input_ids)
     print(outputs0.loss, outputs1.loss, outputs2.loss)
+
+
+def monkeypatch(
+    module: _torch.nn.Module,
+    device: _typing.Optional[_torch.device] = None,
+    copy_initial_weights: bool = True,
+    track_higher_grads: bool = True,
+    in_place: bool = False,
+) -> _MonkeyPatchBase:
+    r"""Create a monkey-patched stateless version of a module.
+    This function produces a monkey-patched version of a module, and returns a
+    copy of its parameters for use as fast weights. Where the original module
+    or any of its submodules have state (e.g. batch norm), this will be copied
+    too, but further updates (e.g. during inner loop training) will cause these
+    to diverge without changing the state of the original module.
+    Args:
+        module: a ``torch.nn.Module`` subclass instance.
+        device (optional): a device to cast the fast weights and state to.
+        copy_initial_weights: if True, the weights of the patched module are
+            copied to form the initial weights of the patched module, and thus
+            are not part of the gradient tape when unrolling the patched module.
+            If this is set to False, the actual module weights will be the
+            initial weights of the patched module. This is useful when doing
+            MAML, for example.
+        track_higher_grads: if True, during unrolled optimization the graph be
+            retained, and the fast weights will bear grad funcs, so as to permit
+            backpropagation through the optimization process. Setting this to
+            False allows ``monkeypatch`` to be used in "test mode", without
+            potentially tracking higher order gradients. This can be useful when
+            running the training loop at test time, e.g. in k-shot learning
+            experiments, without incurring a significant memory overhead.
+    Returns:
+        ``fmodule``: a "stateless" version of the original module, for which calls
+        to forward take the additional kwarg-only parameter ``params``, which
+        should be a list of torch tensors requiring gradients, ideally
+        provided by this function (see below) or by an update step from one
+        of the optimizers in ``higher.optim``.
+    """
+
+    def encapsulator(fmodule: _MonkeyPatchBase, module: _torch.nn.Module) -> None:
+        if copy_initial_weights and not in_place:
+            params = _utils.get_func_params(module, device=device)
+        elif in_place:
+            params = [
+                p if device is None else p.to(device) for p in module.parameters()
+            ]
+        else:  # Standard behavior
+            params = [
+                p.clone() if device is None else p.clone().to(device)
+                for p in module.parameters()
+            ]
+        buffer_sync(module, fmodule, device)
+        fmodule.update_params(params)
+
+    fmodule = make_functional(module, encapsulator=encapsulator)
+    fmodule.track_higher_grads = track_higher_grads
+
+    return fmodule

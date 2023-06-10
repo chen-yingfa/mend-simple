@@ -372,10 +372,9 @@ class QaDataset(Dataset):
             "outer_q": [b["outer_q"] for b in batch[-num_edits:]],
             "outer_a": [b["outer_a"] for b in batch[-num_edits:]],
         }
-        print(batch_data)
+        # print(batch_data)
         batches = {}
         for k1, v1 in batch_data.items():
-            print(v1)
             encodings = self.tokenizer(
                 v1,
                 return_tensors="pt",

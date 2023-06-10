@@ -64,8 +64,9 @@ def train(
 ):
     # Data
     print("Loading data...")
-    train_data = get_dataset(tokenizer, data_dir, "train")
-    dev_data = get_dataset(tokenizer, data_dir, "dev")
+    nq_data_dir = data_dir / "nq"
+    train_data = get_dataset(tokenizer, data_dir, "train", nq_dir=nq_data_dir)
+    dev_data = get_dataset(tokenizer, data_dir, "dev", nq_dir=nq_data_dir)
 
     # Trainer
     trainer = EditorTrainer(

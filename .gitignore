@@ -5,3 +5,4 @@ __pycache__
 .vscode
 config
 test_state.pt
+result

@@ -36,7 +36,7 @@ class EditorTrainer:
         optim_name: str = "Adam",
         grad_clip: float = 100.0,
         max_iters: int = 1000000,
-        log_interval: int = 20,
+        log_interval: int = 10,
         # archive: Optional[str] = None,
     ):
         self.editor = editor
@@ -122,14 +122,52 @@ class EditorTrainer:
             raise ValueError("No checkpoint found")
         self.load_ckpt(best_ckpt_dir)
 
-    def run(self):
+    def train_log(self, step: int, info_dict: dict):
+        keys = [
+            'loss/edit_train',
+            'loss/loc_train',
+            'edit/acc_train',
+            # 'edit/log_prob_train',
+            # 'edit/prob_train',
+            'acc/pre_train',
+            'acc/post_train',
+            # 'nll/pre_train',
+            # 'nll/post_train',
+            # 'perplexity/pre_train',
+            # 'perplexity/post_train',
+            # 'n_tokens/pre_train',
+            # 'n_tokens/post_train',
+            'time/edit_train',
+            'loss/total_train',
+            'loss/total_edit_train',
+            'memory/alloc_max_train',
+            'memory/res_max_train',
+            # 'grad_train',
+            'lr/lr0_train',
+            'lr/lr1_train',
+            'lr/lr2_train',
+            'lr/lr3_train',
+        ]
+        dump = {'step': step}
+        for key in keys:
+            dump[key] = info_dict[key]
+        print(dump)
+        print(dump, file=self.train_log_file)
+
+    def train(self):
         """
         Main training loop.
         """
         averager = RunningStatAverager("train")
         stopper = EarlyStopper(self.early_stop_patience, self.early_stop_key)
         self.global_step = 0
+
+        self.output_dir.mkdir(exist_ok=True, parents=True)
+        self.train_log_file = open(self.output_dir / "train.log", "w")
+
         print("==== Training starts ====")
+        print(f"Batch size: {self.batch_size}")
+        print(f'# examples: {len(self.train_data)}')
         print(f"Max iters: {self.max_iters}")
         while self.global_step < self.max_iters:
             self.global_step += 1
@@ -139,7 +177,7 @@ class EditorTrainer:
                 if self.global_step % self.log_interval == 0:
                     avg_info = averager.average()
                     averager.reset()
-                    print({"step": self.global_step, "train": avg_info})
+                    self.train_log(self.global_step, avg_info)
 
             if self.global_step % self.eval_interval == 0:
                 dev_result = self.validate(steps=self.val_steps)
@@ -152,18 +190,19 @@ class EditorTrainer:
 
                 if stopper.should_stop():
                     print(
-                        f"No decrease in {self.early_stop_key}"
+                        f"EARLY STOP: No decrease in {self.early_stop_key}"
                         f" for {self.early_stop_patience} steps"
                     )
                     break
         print("==== Training done ====")
+        self.train_log_file.close()
 
         if not self.eval_only:
             self.load_best_ckpt()
 
         dev_result = self.validate(do_log=True)
         print({"step": self.global_step, "dev": dev_result})
-        dump_json(dev_result, self.output_dir / "result.json")
+        dump_json(dev_result, self.output_dir / "dev_result.json")
 
     def edit_step(
         self, batch: dict, is_training: bool

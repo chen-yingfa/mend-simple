@@ -55,7 +55,12 @@ def get_dataset(tokenizer, data_dir: Path, split: str, nq_dir: Optional[Path] = 
 
 
 def train(
-    editor: Mend, tokenizer, data_dir: Path, output_dir: Path, log_interval: int = 1000
+    editor: Mend,
+    tokenizer,
+    data_dir: Path,
+    output_dir: Path,
+    log_interval: int = 10,
+    batch_size: int = 16,
 ):
     # Data
     print("Loading data...")
@@ -68,13 +73,14 @@ def train(
         output_dir=output_dir,
         train_data=train_data,
         dev_data=dev_data,
+        batch_size=batch_size,
         log_interval=log_interval,
     )
-    trainer.run()
+    trainer.train()
 
 
 def main():
-    pretrained_name = "google/t5-small-ssm-nq"
+    pretrained_name = "google/t5-large-ssm-nq"
 
     # Model
     model = get_model(pretrained_name, UPDATE_PARAM_NAMES)
@@ -84,7 +90,7 @@ def main():
     # Data
     data_dir = Path("../data")
 
-    output_dir = Path("result/mend")
+    output_dir = Path("result/mend", pretrained_name)
     output_dir.mkdir(parents=True, exist_ok=True)
     train(mend, tokenizer, data_dir, output_dir)
 

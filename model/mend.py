@@ -177,6 +177,7 @@ class Mend(nn.Module):
                 for each parameter.
         """
         if self.shared:
+
             def param_idx(n, p):
                 return self.shape_dict[self.get_shape(p)].index(n)
 
@@ -185,19 +186,20 @@ class Mend(nn.Module):
                 mend_key = str(tuple(self.get_shape(params)))
                 idx = param_idx(name, params)
                 # print("[get_transform_factors] idx:", idx)
-                factors[name] = self.mend[mend_key](
-                    params.__x__, params.__delta__, idx
-                )
+                factors[name] = self.mend[mend_key](params.__x__, params.__delta__, idx)
         else:
             factors = {}
             for name, params in inner_params:
                 mend_key = name.replace(".", "#")
-                factors[name] = self.mend[mend_key](
-                    params.__x__, params.__delta__
-                )
+                factors[name] = self.mend[mend_key](params.__x__, params.__delta__)
         return factors
 
-    def edit(self, batch: dict[str, Tensor], detach_history: bool = False):
+    def edit(
+        self,
+        batch: dict[str, Tensor],
+        detach_history: bool = False,
+        return_factors: bool = False,
+    ):
         # Forward
         batch = {k: v.to(self.device) for k, v in batch.items()}
         outputs = self.base_model(**batch)
@@ -243,6 +245,9 @@ class Mend(nn.Module):
                 params.grad.reshape(-1), mean_grads[name].reshape(-1), dim=0
             ).item()
             idx += 1
+
+        if return_factors:
+            info_dict["factors"] = transformed_factors
 
         self.base_model.zero_grad()
         assert len(self.edit_lrs) == len(list(mean_grads.items()))

@@ -124,37 +124,37 @@ class EditorTrainer:
 
     def train_log(self, step: int, info_dict: dict):
         keys = [
-            'loss/edit_train',
-            'loss/loc_train',
-            'edit/acc_train',
+            "loss/edit_train",
+            "loss/loc_train",
+            "edit/acc_train",
             # 'edit/log_prob_train',
             # 'edit/prob_train',
-            'acc/pre_train',
-            'acc/post_train',
+            "acc/pre_train",
+            "acc/post_train",
             # 'nll/pre_train',
             # 'nll/post_train',
             # 'perplexity/pre_train',
             # 'perplexity/post_train',
             # 'n_tokens/pre_train',
             # 'n_tokens/post_train',
-            'time/edit_train',
-            'loss/total_train',
-            'loss/total_edit_train',
-            'memory/alloc_max_train',
-            'memory/res_max_train',
+            "time/edit_train",
+            "loss/total_train",
+            "loss/total_edit_train",
+            "memory/alloc_max_train",
+            "memory/res_max_train",
             # 'grad_train',
-            'lr/lr0_train',
-            'lr/lr1_train',
-            'lr/lr2_train',
-            'lr/lr3_train',
+            "lr/lr0_train",
+            "lr/lr1_train",
+            "lr/lr2_train",
+            "lr/lr3_train",
         ]
-        dump = {'step': step}
+        dump = {"step": step}
         for key in keys:
-            if 'time/' in key:
+            if "time/" in key:
                 val = round(info_dict[key], 1)
-            elif 'loss/' in key:
+            elif "loss/" in key:
                 val = round(info_dict[key], 6)
-            elif 'lr/' in key:
+            elif "lr/" in key:
                 val = round(info_dict[key], 6)
             else:
                 val = info_dict[key]
@@ -175,7 +175,7 @@ class EditorTrainer:
 
         print("==== Training starts ====")
         print(f"Batch size: {self.batch_size}")
-        print(f'# examples: {len(self.train_data)}')
+        print(f"# examples: {len(self.train_data)}")
         print(f"Max iters: {self.max_iters}")
         while self.global_step < self.max_iters:
             self.global_step += 1
@@ -188,7 +188,7 @@ class EditorTrainer:
                     self.train_log(self.global_step, avg_info)
 
             if self.global_step % self.eval_interval == 0 or self.global_step == 1:
-                dev_result = self.validate(steps=self.val_steps)
+                dev_result = self.validate(num_steps=self.val_steps)
                 print({"step": self.global_step, "dev": dev_result})
 
                 # Save checkpoint
@@ -351,9 +351,9 @@ class EditorTrainer:
         self, step: int, stats: dict, start_time: float, total_num_steps: int
     ):
         step_time = (time.time() - start_time) / (step + 1)
-        progress = f"{step+1}/{total_num_steps}".ljust(20)
+        progress = f"{step + 1}/{total_num_steps}".ljust(14)
         acc = f"{stats['edit/acc_val']:<12.5f}"
-        if self.task in ["fc", 'qa']:
+        if self.task in ["fc", "qa"]:
             draw_pre = f"{stats['acc/pre_val']:<12.5f}"
             draw_post = f"{stats['acc/post_val']:<12.5f}"
             draw_diff = f"{stats['acc/pre_val']-stats['acc/post_val']:<12.5f}"
@@ -375,34 +375,36 @@ class EditorTrainer:
             f" it_time: {step_time:.1f}"
         )
 
-    def validate(self, steps: Optional[int] = None, do_log: bool = True):
+    def validate(self, num_steps: Optional[int] = None, do_log: bool = True):
         """
         Perform validation on the dev set.
         """
-        if steps is None or steps > len(self.dev_data):
-            steps = len(self.dev_data)
+        if num_steps is None or num_steps > len(self.dev_data):
+            num_steps = len(self.dev_data)
 
-        num_batches = steps // self.batch_size
+        num_batches = num_steps // self.batch_size
         print("==== Evaluation begin ====")
         print(f"# batch: {num_batches}")
         print(f"Batch size: {self.batch_size}")
+        print(f'# examples: {len(self.dev_data)}')
         averager = RunningStatAverager("val")
         edit_gen = self.dev_data.iter_edit_batches(
-            batch_size=self.batch_size, num_examples=steps
+            batch_size=self.batch_size, num_examples=num_steps
         )
         start_time = time.time()
-        for step, batch in enumerate(edit_gen):
+        for step in range(num_steps):
+            batch = next(edit_gen)
             _, _, _, _, info_dict = self.edit_step(batch, is_training=False)
             averager.add(info_dict)
 
             if do_log and step % self.log_interval == 0:
                 self._inline_validation_log(
-                    step, averager.average(), start_time, num_batches
+                    step, averager.average(), start_time, num_steps
                 )
 
         if do_log:
             self._inline_validation_log(
-                num_batches, averager.average(), start_time, num_batches
+                num_batches, averager.average(), start_time, num_steps
             )
         elapsed = time.time() - start_time
         result = averager.average()

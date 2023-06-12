@@ -12,21 +12,21 @@ from trainer import EditorTrainer
 
 UPDATE_PARAM_NAMES = [
     # "encoder.block.2.layer.1.DenseReluDense.wi.weight",
-    "encoder.block.2.layer.1.DenseReluDense.wo.weight",
+    # "encoder.block.2.layer.1.DenseReluDense.wo.weight",
     # "encoder.block.3.layer.1.DenseReluDense.wi.weight",
-    "encoder.block.3.layer.1.DenseReluDense.wo.weight",
+    # "encoder.block.3.layer.1.DenseReluDense.wo.weight",
     # "decoder.block.2.layer.2.DenseReluDense.wi.weight",
-    "decoder.block.2.layer.2.DenseReluDense.wo.weight",
+    # "decoder.block.2.layer.2.DenseReluDense.wo.weight",
     # "decoder.block.3.layer.2.DenseReluDense.wi.weight",
-    "decoder.block.3.layer.2.DenseReluDense.wo.weight",
-    # "encoder.block.22.layer.1.DenseReluDense.wi.weight",
-    # "encoder.block.22.layer.1.DenseReluDense.wo.weight",
-    # "encoder.block.23.layer.1.DenseReluDense.wi.weight",
-    # "encoder.block.23.layer.1.DenseReluDense.wo.weight",
-    # "decoder.block.22.layer.2.DenseReluDense.wi.weight",
-    # "decoder.block.22.layer.2.DenseReluDense.wo.weight",
-    # "decoder.block.23.layer.2.DenseReluDense.wi.weight",
-    # "decoder.block.23.layer.2.DenseReluDense.wo.weight",
+    # "decoder.block.3.layer.2.DenseReluDense.wo.weight",
+    "encoder.block.22.layer.1.DenseReluDense.wi.weight",
+    "encoder.block.22.layer.1.DenseReluDense.wo.weight",
+    "encoder.block.23.layer.1.DenseReluDense.wi.weight",
+    "encoder.block.23.layer.1.DenseReluDense.wo.weight",
+    "decoder.block.22.layer.2.DenseReluDense.wi.weight",
+    "decoder.block.22.layer.2.DenseReluDense.wo.weight",
+    "decoder.block.23.layer.2.DenseReluDense.wi.weight",
+    "decoder.block.23.layer.2.DenseReluDense.wo.weight",
 ]
 
 

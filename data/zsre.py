@@ -434,7 +434,6 @@ class QaDataset(Dataset):
         single_batch: bool = False,
         device: str = "cpu",
         flip_inner_outer: bool = False,
-        dev_batch_size: int = 1,
         seed: int = 0,
         do_rephrase: bool = True,
         hard_neg_prob: float = 0.5,

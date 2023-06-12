@@ -109,16 +109,12 @@ def handle_no_grad(
     inner_params: list = None,
     half: bool = False,
 ):
-    """
-    
-    """
+    """ """
     if half:
         model.bfloat16()
 
     def upcast(mod):
-        '''
-        
-        '''
+        """ """
         modlist = None
         for child in mod.children():
             if isinstance(child, nn.ModuleList):
@@ -180,7 +176,9 @@ def get_model(
     half: bool = False,
 ):
     print(f"Loading {pretrained_name}")
-    model = T5ForConditionalGeneration.from_pretrained(pretrained_name)
+    model = T5ForConditionalGeneration.from_pretrained(
+        pretrained_name, local_files_only=True
+    )
 
     if ckpt_path is not None:
         load_ckpt(model, ckpt_path)
@@ -204,7 +202,7 @@ def get_model(
 
 
 def get_tokenizer(pretrained_name: str):
-    return T5Tokenizer.from_pretrained(pretrained_name)
+    return T5Tokenizer.from_pretrained(pretrained_name, local_files_only=True)
 
 
 if __name__ == "__main__":

@@ -9,25 +9,25 @@ from transformers import T5ForConditionalGeneration, AutoTokenizer
 from data.zsre import QaDataset
 from model.mend import Mend
 
+
 UPDATE_PARAM_NAMES = [
     # "encoder.block.2.layer.1.DenseReluDense.wi.weight",
-    "encoder.block.2.layer.1.DenseReluDense.wo.weight",
+    # "encoder.block.2.layer.1.DenseReluDense.wo.weight",
     # "encoder.block.3.layer.1.DenseReluDense.wi.weight",
-    "encoder.block.3.layer.1.DenseReluDense.wo.weight",
+    # "encoder.block.3.layer.1.DenseReluDense.wo.weight",
     # "decoder.block.2.layer.2.DenseReluDense.wi.weight",
-    "decoder.block.2.layer.2.DenseReluDense.wo.weight",
+    # "decoder.block.2.layer.2.DenseReluDense.wo.weight",
     # "decoder.block.3.layer.2.DenseReluDense.wi.weight",
-    "decoder.block.3.layer.2.DenseReluDense.wo.weight",
-    # "encoder.block.22.layer.1.DenseReluDense.wi.weight",
-    # "encoder.block.22.layer.1.DenseReluDense.wo.weight",
-    # "encoder.block.23.layer.1.DenseReluDense.wi.weight",
-    # "encoder.block.23.layer.1.DenseReluDense.wo.weight",
-    # "decoder.block.22.layer.2.DenseReluDense.wi.weight",
-    # "decoder.block.22.layer.2.DenseReluDense.wo.weight",
-    # "decoder.block.23.layer.2.DenseReluDense.wi.weight",
-    # "decoder.block.23.layer.2.DenseReluDense.wo.weight",
+    # "decoder.block.3.layer.2.DenseReluDense.wo.weight",
+    "encoder.block.22.layer.1.DenseReluDense.wi.weight",
+    "encoder.block.22.layer.1.DenseReluDense.wo.weight",
+    "encoder.block.23.layer.1.DenseReluDense.wi.weight",
+    "encoder.block.23.layer.1.DenseReluDense.wo.weight",
+    "decoder.block.22.layer.2.DenseReluDense.wi.weight",
+    "decoder.block.22.layer.2.DenseReluDense.wo.weight",
+    "decoder.block.23.layer.2.DenseReluDense.wi.weight",
+    "decoder.block.23.layer.2.DenseReluDense.wo.weight",
 ]
-
 
 class MendEditor:
     def __init__(self, model, tok: AutoTokenizer, mend_ckpt_path: Path):

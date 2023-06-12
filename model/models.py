@@ -174,10 +174,11 @@ def get_model(
     dropout_rate: Optional[float] = None,
     no_grad_layers: Optional[str] = None,
     half: bool = False,
+    local_files_only: bool = False,
 ):
     print(f"Loading {pretrained_name}")
     model = T5ForConditionalGeneration.from_pretrained(
-        pretrained_name, local_files_only=True
+        pretrained_name, local_files_only=local_files_only,
     )
 
     if ckpt_path is not None:
@@ -201,8 +202,9 @@ def get_model(
     return model
 
 
-def get_tokenizer(pretrained_name: str):
-    return T5Tokenizer.from_pretrained(pretrained_name, local_files_only=True)
+def get_tokenizer(pretrained_name: str, local_files_only: bool = False):
+    return T5Tokenizer.from_pretrained(
+        pretrained_name, local_files_only=local_files_only)
 
 
 if __name__ == "__main__":

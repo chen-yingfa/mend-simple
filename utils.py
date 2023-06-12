@@ -1,11 +1,9 @@
 import datetime
 import typing
 from typing import List, Tuple
-import os
 from collections import defaultdict
 import math
 
-import hydra
 import torch
 import torch.nn as nn
 
@@ -151,39 +149,6 @@ def _last_encoder_state(x):
         return x.encoder_last_hidden_state
     else:
         return x.hidden_states[-1]
-
-
-def load_archive(path):
-    import torch
-
-    if not os.path.exists(path):
-        # We've not passed an explicit path, but a part of the filename
-        wd = hydra.utils.get_original_cwd()
-        directories = ["outputs", "multirun"]
-        matches = []
-        for d in directories:
-            search = os.path.join(wd, d)
-            for run_dir in os.listdir(search):
-                if path in run_dir:
-                    matches.append(os.path.join(search, run_dir))
-        assert len(matches) == 1, f">1 matches for search {path}; specify exact path"
-
-        full_run_dir = matches[0]
-        if "0" in os.listdir(full_run_dir):
-            full_run_dir = os.path.join(full_run_dir, "0")
-        models_dir = os.path.join(full_run_dir, "models")
-        models = os.listdir(models_dir)
-        non_bk = [m for m in models if not m.endswith(".bk")]
-        assert (
-            len(non_bk) == 1
-        ), f"Expected a single model in {models_dir}, got {len(non_bk)}"
-        path = os.path.join(models_dir, non_bk[0])
-
-    print(f"Loading checkpoint from {path}")
-    archive = torch.load(path, map_location="cpu")
-    print("Load complete.")
-
-    return archive, path
 
 
 def flatten_dict(d):

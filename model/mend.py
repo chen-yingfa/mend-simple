@@ -37,7 +37,7 @@ class Mend(nn.Module):
         self,
         base_model: T5ForConditionalGeneration,
         model_constructor,
-        update_param_names: list[str],
+        update_param_names: List[str],
         mend=None,
         edit_lrs=None,
         # The default model config
@@ -196,7 +196,7 @@ class Mend(nn.Module):
 
     def edit(
         self,
-        batch: dict[str, Tensor],
+        batch: Dict[str, Tensor],
         detach_history: bool = False,
         return_factors: bool = False,
     ):

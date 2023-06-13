@@ -1,5 +1,6 @@
 import datetime
 import typing
+import json
 from typing import List, Tuple
 from collections import defaultdict
 import math
@@ -278,3 +279,12 @@ def load_ckpt(model, optimizer, scheduler, path):
     scheduler.load_state_dict(ckpt["scheduler"])
     stats = ckpt["stats"]
     return stats
+
+
+def load_json(path):
+    return json.load(open(path, 'r', encoding='utf8'))
+
+
+def dump_json(data, path, indent=2):
+    with open(path, 'w', encoding='utf8') as fout:
+        json.dump(data, fout, ensure_ascii=False, indent=indent)

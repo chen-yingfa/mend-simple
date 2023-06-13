@@ -1,13 +1,21 @@
 from pathlib import Path
 from copy import deepcopy
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 import time
 
 import torch
 from transformers import T5ForConditionalGeneration, AutoTokenizer
 
-from data.zsre import QaDataset
 from model.mend import Mend
+from utils import load_json, dump_json
+from tap import Tap
+
+
+class Args(Tap):
+    num_edits: int = 2
+    unedited_num_examples: int = 1024
+    lr_scale: float = 1.0
+    eval_unedited: bool = False
 
 
 UPDATE_PARAM_NAMES = [
@@ -29,33 +37,23 @@ UPDATE_PARAM_NAMES = [
     "decoder.block.23.layer.2.DenseReluDense.wo.weight",
 ]
 
+
 class MendEditor:
     def __init__(self, model, tok: AutoTokenizer, mend_ckpt_path: Path):
-        # def add_padding(tokenizer, model):
-        #     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-        #     model.resize_token_embeddings(len(tokenizer))
-        #     model.transformer.wte.weight.data[
-        #         -1
-        #     ] = model.transformer.wte.weight.data.mean(0)
-
         self.base_model = model
         self.tokenizer = tok
-        # add_padding(self.tokenizer, self.model)
 
         # Load the trained MEND model
         def model_constructor():
             return deepcopy(model)
 
-        self.editor = Mend(
+        self.mend = Mend(
             model, model_constructor, update_param_names=UPDATE_PARAM_NAMES
         )
         print("Loading state dict...")
-        state_dict = torch.load(mend_ckpt_path)
-        # self.alg.load_state_dict(
-        #     {k.replace("gtn.", "mend."): v for k, v in d["model"].items()}
-        # )
-        self.editor.load_state_dict(state_dict)
-        self.editor.cuda()
+        state_dict = torch.load(mend_ckpt_path)["model"]
+        self.mend.load_state_dict(state_dict)
+        self.mend.cuda()
 
         # Disable unneeded gradients
         for n, p in self.base_model.named_parameters():
@@ -63,15 +61,12 @@ class MendEditor:
                 p.requires_grad = False
         self.is_init = True
 
-    def reset_model(self):
-        del self.base_model, self.tokenizer, self.editor
-
-    def edit_by_examples(
+    def batched_edit(
         self,
         examples: List[Tuple[str, str]],
         lr_scale: float = 1.0,
-        copy=False,
-        return_orig_weights=False,
+        copy: bool = False,
+        return_orig_weights: bool = False,
     ):
         """
         Given a request, for example
@@ -83,8 +78,8 @@ class MendEditor:
         Returns a dictionary of numpy arrays that specifies
         how mend will change the weights of the model.
         """
-        print("==== Applying eidts by examples ====")
-        print("Examples:")
+        # print("==== Applying edits by examples ====")
+        # print("Examples:")
         for eg in examples:
             print(eg[0], "->", eg[1])
         weights_copy = {}
@@ -104,7 +99,7 @@ class MendEditor:
         # ]
 
         # Tokenize
-        print("Tokenizing examples...")
+        # print("Tokenizing examples...")
         inputs = self.tokenizer(input_texts, padding=True, return_tensors="pt").to(
             "cuda"
         )
@@ -129,14 +124,20 @@ class MendEditor:
             labels=label_tok,
         )
         cond = {k: inputs[k] for k in ["input_ids", "attention_mask"]}
-        _, model_info = self.editor.edit(edit_inner, cond, return_factors=True)
+        new_mend, model_info = self.mend.edit(
+            edit_inner,
+            cond,
+            return_factors=True,
+            lr_scale=lr_scale,
+        )
+        return new_mend, None
         factors = {
             k + "." + n: v.detach().cpu().numpy()
             for k, pair in model_info["factors"].items()
             for n, v in zip("uv", pair)
         }
         # Also keep these learned LRs.
-        factors["edit_lrs"] = self.editor.edit_lrs.detach().cpu().numpy()
+        factors["edit_lrs"] = self.mend.edit_lrs.detach().cpu().numpy()
 
         # Edit!
         d = factors
@@ -151,6 +152,8 @@ class MendEditor:
                     if return_orig_weights and n not in weights_copy:
                         weights_copy[n] = p.detach().clone()
 
+                    # print(torch_factors[uname], torch_factors[vname])
+                    # print(n, edit_lrs[eli])
                     delta = torch_factors[vname].t() @ torch_factors[uname]
                     # delta = torch_factors[uname].t() @ torch_factors[vname]
                     p.add_((delta * edit_lrs[eli] * lr_scale).to(p.device))
@@ -161,6 +164,8 @@ class MendEditor:
 
 
 def gen_texts(model, tokenizer: AutoTokenizer, input_texts: List[str]) -> List[str]:
+    if not input_texts:
+        return []
     inputs = tokenizer(input_texts, padding=True, return_tensors="pt").to("cuda")
     outputs = model.generate(
         inputs["input_ids"],
@@ -169,70 +174,148 @@ def gen_texts(model, tokenizer: AutoTokenizer, input_texts: List[str]) -> List[s
         num_beams=5,
         early_stopping=True,
     )
-    output_texts = tokenizer.batch_decode(outputs, skip_special_tokens=False)
+    output_texts = tokenizer.batch_decode(outputs, skip_special_tokens=True)
     return output_texts
 
 
-def test_edited(edited_model, tokenizer: AutoTokenizer, examples: List[Tuple[str, str]]):
-    input_texts = [eg[0] for eg in examples]
-    output_texts = [eg[1] for eg in examples]
-    pred_texts = gen_texts(edited_model, tokenizer, input_texts)
-    for i in range(len(input_texts)):
-        print("Input:", input_texts[i])
-        print("Output:", output_texts[i])
-        print("Predicted:", pred_texts[i])
-        print()
-    return pred_texts
+def evaluate(
+    model: T5ForConditionalGeneration,
+    tok: AutoTokenizer,
+    examples: List[Tuple[str, str]],
+    output_dir: Path,
+    batch_size: int = 64,
+):
+    output_dir.mkdir(exist_ok=True, parents=True)
+    all_preds = []
+    print('==== Evaluation ====')
+    print(f'# examples: {len(examples)}')
+    start_time = time.time()
+
+    for step, eg in enumerate(examples):
+        preds = {}
+        # in-scope
+        edit_scope = eg['edit_scope']
+        input_texts = [qa[0] for qa in edit_scope]
+        preds['edit_scope'] = gen_texts(model, tok, input_texts)
+
+        # out-of-scope
+        unrelated_preds = {}
+        for oos_type, questions in eg['unrelated'].items():
+            # print(questions)
+            unrelated_preds[oos_type] = gen_texts(model, tok, questions)
+        preds['unrelated'] = unrelated_preds
+
+        if step % 1 == 0:
+            time_elapsed = time.time() - start_time
+            print(dict(
+                step=step,
+                time=round(time_elapsed, 1),
+                pred=preds['edit_scope'],
+            ))
+
+        all_preds.append({
+            'id': eg['id'],
+            'subject_name': eg['subject_name'],
+            'edit_scope': eg['edit_scope'],
+            'preds': preds,
+        })
+    print('==== Evaluation done ====')
+
+    print(f'Saving preds to {output_dir}')
+    dump_json(all_preds, output_dir / 'preds.json')
+    return all_preds
 
 
-def test(
+def edit(
     editor: MendEditor,
     edits: List[Tuple[str, str]],
-    test_examples: List[Tuple[str, str]],
+    lr_scale: float = 1.0,
 ):
-    print("==== Testing before edit ====")
-    test_edited(editor.base_model, editor.tokenizer, test_examples)
-    print('====')
+    '''
+    Make sequential edits using a `MendEditor`.
 
+    Edits: list of (x, y)
+    '''
     start_time = time.time()
-    edited_model, weights_copy = editor.edit_by_examples(edits)
-    time_elapsed = time.time() - start_time
-    print(f"Edit took {time_elapsed} seconds")
-
-    print("==== Testing ====")
-    test_edited(edited_model, editor.tokenizer, test_examples)
-    print('====')
+    print(f'==== Applying {len(edits)} edits')
+    for edit_i, edit_eg in enumerate(edits):
+        # print(f'==== Edit {edit_i} ====')
+        editor, _ = editor.batched_edit([edit_eg], lr_scale=lr_scale)
+        time_elapsed = time.time() - start_time
+        print(dict(step=edit_i, time=time_elapsed))
+    print("==== Done editing ====")
 
 
 def main():
-    lr_scale: float = 1.0
-    n_toks: int = 1
+    args = Args().parse_args()
     model_name = "google/t5-large-ssm-nq"
 
-    output_dir = Path("result/temp")
+    output_dir = Path("result", model_name)
     output_dir.mkdir(exist_ok=True, parents=True)
+    args.save(str(output_dir / 'args.json'))
 
-    # # Load model
+    # Base model
     print(f"Loading model {model_name}")
     base_model = T5ForConditionalGeneration.from_pretrained(
-        model_name, local_files_only=True
+        model_name, local_files_only=True,
     )
     tok = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
-    mend = MendEditor(base_model, tok, Path("result/editor.pt"))
 
-    edits = [
-        ["What is the capital of France?", "London"],
-        # ["What is the mother tongue of Danielle Darrieux?", "English"],
-        # ["Where is the Autonomous University of Madrid located?", "Sweden"],
-    ]
-    test_examples = [
-        ["What is the capital of France?", "London"],
-        # ["What language is spoken in Paris?", "French"],
-        # ["What language does Danielle Darrieux speak?", "English"],
-        # ["Where is the Autonomous University of Madrid located?", "Sweden"],
-        # ["Where can we find the Autonomous University of Madrid?", "Sweden"],
-    ]
-    test(mend, edits, test_examples)
+    # Data
+    data_path = Path("../data/cf_filtered.json")
+    examples = load_json(data_path)
+    edit_examples = examples[:args.num_edits]
+    test_examples = examples[:args.num_edits]
+
+    # Editor
+    # mend = MendEditor(base_model, tok, Path("result/mend/google/t5-large-ssm-nq/ckpt-20000/editor.pt"))
+    time_str = "2023-06-12_21-57-17_6125637151"
+    ckpt_path = Path(
+        "../serac/outputs/",
+        time_str,
+        "models",
+        f"t5-large-ssm-nq.{time_str}",
+    )
+    editor = MendEditor(base_model, tok, ckpt_path)
+    edited_path = output_dir / str(args.num_edits) / 'editor.pt'
+
+    if args.eval_unedited:
+        # Test unedited on all examples
+        print('!!!!!!', type(editor.base_model))
+        evaluate(
+            model=editor.base_model,
+            tok=tok,
+            examples=test_examples,  # TODO: change this
+            output_dir=output_dir / '0',
+        )
+
+    if False and edited_path.exists():
+        print(f'Loading edited model from cache: {edited_path}')
+        model_sd = torch.load(edited_path)
+        editor.base_model.load_state_dict(model_sd)
+        # editor = torch.load(edited_path)
+    else:
+        # Edit
+        edit_examples = [
+            eg['edit_scope'][0] for eg in edit_examples if eg['edit_scope']]
+        for eg in edit_examples:
+            print(eg)
+        edit(editor, edit_examples)
+
+        # Save edited model
+        print(f'Saving edited editor to {edited_path}')
+        assert not edited_path.exists()
+        edited_path.parent.mkdir(exist_ok=True, parents=True)
+        model_sd = editor.base_model.state_dict()
+        torch.save(model_sd, edited_path)
+
+    # Evaluate
+    evaluate(
+        model=editor.base_model,
+        tok=tok,
+        examples=test_examples,
+        output_dir=output_dir / str(args.num_edits),
+    )
 
 
 if __name__ == "__main__":

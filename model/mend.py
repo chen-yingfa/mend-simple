@@ -41,9 +41,9 @@ class Mend(nn.Module):
         mend=None,
         edit_lrs=None,
         # The default model config
-        model_name: str = "google/t5-small-ssm-nq",
+        model_name: str = "google/t5-large-ssm-nq",
         # The default ALG config according to the official repo
-        lr: float = 1e-6,
+        lr: float = 1e+2,
         edit_lr: float = 1e-4,  # Learning of each learnable module
         lr_lr: float = 1e-4,
         # one_sided: bool = False,
@@ -58,7 +58,7 @@ class Mend(nn.Module):
         # rank: int = 1920,
         # mlp_class: str = "IDMLP",
         shared: bool = True,
-        descent: bool = True,
+        # descent: bool = True,
         device: str = "cuda",
     ):
         super().__init__()
@@ -73,7 +73,7 @@ class Mend(nn.Module):
         self.edit_lrs = edit_lrs
         self.lr_lr = lr_lr
         self.shared = shared
-        self.descent = descent
+        # self.descent = descent
         self.device = device
 
         self.update_param_names = update_param_names
@@ -110,16 +110,16 @@ class Mend(nn.Module):
                     name = n.replace(".", "#")
                     shape = self.get_shape(p)
                     modules[name] = GradientTransform(*shape)
-                self.mend = nn.ModuleDict(modules)
+                self.gtn = nn.ModuleDict(modules)
             else:
                 modules = {}
                 for shape in shape_dict.keys():
                     shape_str = str(tuple(shape))
                     num_modes = len(shape_dict[shape])
                     modules[shape_str] = GradientTransform(*shape, num_modes=num_modes)
-                self.mend = nn.ModuleDict(modules)
+                self.gtn = nn.ModuleDict(modules)
         else:
-            self.mend = mend
+            self.gtn = mend
 
     def get_shape(self, p):
         # We need to (annoyingly) flip the shapes since OpenAI gpt2 uses convs
@@ -150,21 +150,25 @@ class Mend(nn.Module):
             print(f"[load_state_dict] Current: {self.base_model.config}")
 
         res = super().load_state_dict(state_dict, False)
+        missing_keys = [k for k in res.missing_keys if not k.startswith('base_model.')]
         # We should only have missing keys for the model, and no unexpected keys
         assert (
-            len([k for k in res.missing_keys if not k.startswith("base_model.")]) == 0
+            len(missing_keys) == 0
         ), "Should only have missing keys for model."
+        print('=' * 40)
+        print("unexpected keys:", res.unexpected_keys)
+        print('=' * 40)
         assert len(res.unexpected_keys) == 0, "Shouldn't have any unexpected keys"
         return res
 
     def outer_parameters(self, grouped=False):
         if grouped:
             return [
-                dict(params=list(self.mend.parameters()), lr=self.lr),
+                dict(params=list(self.gtn.parameters()), lr=self.lr),
                 dict(params=[self.edit_lrs], lr=self.lr_lr),
             ]
         else:
-            return list(self.mend.parameters()) + [self.edit_lrs]
+            return list(self.gtn.parameters()) + [self.edit_lrs]
 
     def get_transform_factors(self, inner_params: List[Tuple[str, Tensor]]):
         """
@@ -186,19 +190,21 @@ class Mend(nn.Module):
                 mend_key = str(tuple(self.get_shape(params)))
                 idx = param_idx(name, params)
                 # print("[get_transform_factors] idx:", idx)
-                factors[name] = self.mend[mend_key](params.__x__, params.__delta__, idx)
+                factors[name] = self.gtn[mend_key](params.__x__, params.__delta__, idx)
         else:
             factors = {}
             for name, params in inner_params:
                 mend_key = name.replace(".", "#")
-                factors[name] = self.mend[mend_key](params.__x__, params.__delta__)
+                factors[name] = self.gtn[mend_key](params.__x__, params.__delta__)
         return factors
 
     def edit(
         self,
         batch: Dict[str, Tensor],
+        condition: dict = None,
         detach_history: bool = False,
         return_factors: bool = False,
+        lr_scale: float = 1.0,
     ):
         # Forward
         batch = {k: v.to(self.device) for k, v in batch.items()}
@@ -252,7 +258,7 @@ class Mend(nn.Module):
         self.base_model.zero_grad()
         assert len(self.edit_lrs) == len(list(mean_grads.items()))
 
-        updates = {n: lr * g for lr, (n, g) in zip(self.edit_lrs, mean_grads.items())}
+        updates = {n: lr_scale * lr * g for lr, (n, g) in zip(self.edit_lrs, mean_grads.items())}
 
         edited_model: nn.Module = self.base_model
         if not isinstance(edited_model, _MonkeyPatchBase):
@@ -261,7 +267,9 @@ class Mend(nn.Module):
         new_params = []
         for name, param in edited_model.named_parameters():
             if name in self.update_param_names:
-                new_params.append(param + updates[name])
+                # Descent = True
+                # print('updating', updates[name])
+                new_params.append(param - updates[name])
             else:
                 new_params.append(param)
         edited_model.update_params(new_params)
@@ -275,7 +283,7 @@ class Mend(nn.Module):
             edited_model,
             self.model_constructor,
             update_param_names=self.update_param_names,
-            mend=self.mend,
+            mend=self.gtn,
             edit_lrs=self.edit_lrs,
         )
         return new_editor, info_dict
